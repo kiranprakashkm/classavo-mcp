@@ -160,18 +160,56 @@ async def get_chapter_headings(
         raise RuntimeError(error_msg)
 
 
+def extract_text_from_plate_node(node: dict) -> str:
+    """
+    Extract text from a single Plate.js node.
+
+    Args:
+        node: A Plate.js node dict
+
+    Returns:
+        Text content of the node
+    """
+    if not isinstance(node, dict):
+        return ""
+
+    # Skip special node types that don't contain readable text
+    node_type = node.get("type", "")
+    if node_type in ("classavo_chapter_question",):
+        return ""  # Questions are handled separately
+
+    # If it has a 'text' field directly, return it
+    if "text" in node:
+        return node["text"]
+
+    # Otherwise, recurse into children
+    children = node.get("children", [])
+    if children:
+        child_texts = []
+        for child in children:
+            if isinstance(child, dict):
+                text = extract_text_from_plate_node(child)
+                if text:
+                    child_texts.append(text)
+            elif isinstance(child, str):
+                child_texts.append(child)
+        return "".join(child_texts)  # Join without newline for inline elements
+
+    return ""
+
+
 def extract_text_from_plate_content(content: any) -> str:
     """
     Extract plain text from Plate.js JSON content.
 
     Plate.js stores content as a tree of nodes with 'children' and 'text' fields.
-    This recursively extracts all text content.
+    This recursively extracts all text content, preserving paragraph structure.
 
     Args:
         content: Plate.js JSON content (list or dict)
 
     Returns:
-        Plain text string
+        Plain text string with paragraphs separated by newlines
     """
     if content is None:
         return ""
@@ -180,23 +218,72 @@ def extract_text_from_plate_content(content: any) -> str:
         return content
 
     if isinstance(content, dict):
-        # If it has a 'text' field, return it
-        if "text" in content:
-            return content["text"]
-        # Otherwise, recurse into children
-        if "children" in content:
-            return extract_text_from_plate_content(content["children"])
-        return ""
+        # Handle the root 'content' field if present
+        if "content" in content and isinstance(content["content"], list):
+            return extract_text_from_plate_content(content["content"])
+        return extract_text_from_plate_node(content)
 
     if isinstance(content, list):
-        texts = []
+        paragraphs = []
         for item in content:
-            text = extract_text_from_plate_content(item)
-            if text:
-                texts.append(text)
-        return "\n".join(texts)
+            if isinstance(item, dict):
+                text = extract_text_from_plate_node(item)
+                if text.strip():  # Skip empty paragraphs
+                    # Add heading markers for better readability
+                    node_type = item.get("type", "")
+                    if node_type == "h1":
+                        text = f"# {text}"
+                    elif node_type == "h2":
+                        text = f"## {text}"
+                    elif node_type == "h3":
+                        text = f"### {text}"
+                    paragraphs.append(text)
+        return "\n\n".join(paragraphs)
 
     return ""
+
+
+def extract_questions_from_chapter(data: dict) -> list:
+    """
+    Extract embedded questions from chapter data.
+
+    Args:
+        data: Chapter data containing 'questions' field
+
+    Returns:
+        List of question dicts with id, title, and answers
+    """
+    questions = []
+    questions_data = data.get("questions", {})
+
+    # Process both 'create' and 'edit' sections
+    for section in ["create", "edit"]:
+        section_data = questions_data.get(section, {})
+        for q_id, q_data in section_data.items():
+            qa_list = q_data.get("questions_and_answers_list", [])
+            for qa in qa_list:
+                # Extract question title text
+                title_content = qa.get("title", [])
+                title_text = extract_text_from_plate_content(title_content)
+
+                # Extract answers
+                answers = []
+                for ans in qa.get("answer", []):
+                    ans_title = extract_text_from_plate_content(ans.get("title", []))
+                    answers.append({
+                        "text": ans_title,
+                        "is_correct": ans.get("is_correct", False),
+                    })
+
+                questions.append({
+                    "identity": qa.get("identity", q_id),
+                    "question": title_text,
+                    "question_type": q_data.get("question_type"),
+                    "points": q_data.get("points"),
+                    "answers": answers,
+                })
+
+    return questions
 
 
 @mcp.tool(
@@ -232,11 +319,22 @@ async def get_chapter_content(
         raw_content = chapter_info.get("content")  # Plate.js JSON content
 
         # Extract plain text from Plate.js content
-        plain_text = extract_text_from_plate_content(raw_content)
+        plain_text = ""
+        if isinstance(raw_content, dict):
+            # Content field contains 'content' array and 'questions' object
+            content_array = raw_content.get("content", [])
+            plain_text = extract_text_from_plate_content(content_array)
+        elif isinstance(raw_content, list):
+            plain_text = extract_text_from_plate_content(raw_content)
+
+        # Extract embedded questions
+        embedded_questions = []
+        if isinstance(raw_content, dict):
+            embedded_questions = extract_questions_from_chapter(raw_content)
 
         if ctx:
             if plain_text:
-                await ctx.info(f"Loaded chapter content: {len(plain_text)} chars")
+                await ctx.info(f"Loaded chapter: {len(plain_text)} chars, {len(embedded_questions)} questions")
             else:
                 await ctx.info("Chapter loaded but content may be empty")
 
@@ -245,7 +343,7 @@ async def get_chapter_content(
             "chapter_id": chapter_id,
             "title": title,
             "text": plain_text,  # Plain text for easy reading/summarization
-            "raw_content": raw_content,  # Original Plate.js JSON if needed
+            "embedded_questions": embedded_questions,  # Questions embedded in the chapter
         }
 
     except Exception as e:
