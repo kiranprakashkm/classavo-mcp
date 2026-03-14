@@ -477,3 +477,95 @@ async def clone_assignment(
             await ctx.error(error_msg)
         logger.error(error_msg)
         raise RuntimeError(error_msg)
+
+
+@mcp.tool(
+    name="get_tasks",
+    description="Get tasks/assignments with due dates for a course. "
+    "Use this for questions about deadlines, due dates, what's due soon, or past due items. "
+    "Views: 'due_soon' (upcoming), 'past_due' (overdue), 'no_due' (no deadline), 'all' (everything).",
+    tags={"assignments", "professor", "student", "deadlines", "tasks"},
+)
+async def get_tasks(
+    public_id: str,
+    view: str = "due_soon",
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """
+    Get tasks with due dates for a course.
+
+    Args:
+        public_id: The course public ID (e.g., 'W89PCC4')
+        view: Filter view - 'due_soon', 'past_due', 'no_due', or 'all'
+        ctx: MCP context for logging
+
+    Returns:
+        Dict with list of tasks and their due dates
+    """
+    try:
+        if ctx:
+            await ctx.info(f"Fetching {view} tasks for course {public_id}...")
+
+        client = get_client()
+
+        # Build query params based on view
+        params = {}
+        if view == "due_soon":
+            params["view"] = "due_soon"
+            params["ordering"] = "end_date"
+        elif view == "past_due":
+            params["view"] = "past_due"
+            params["ordering"] = "-end_date"
+        elif view == "no_due":
+            params["view"] = "no_due"
+        # 'all' - no view param, returns everything
+
+        result = await client.get(
+            f"/api/v2/dashboard/{public_id}/tasks/",
+            params=params if params else None,
+        )
+
+        tasks = result.get("results", []) if isinstance(result, dict) else result
+
+        # Format tasks with clearer due date info
+        formatted_tasks = []
+        for task in tasks:
+            formatted_task = {
+                "identity": task.get("identity"),
+                "title": task.get("main_title"),
+                "item_type": task.get("item_type"),
+                "due_date": None,
+                "start_date": None,
+            }
+
+            # Extract due date from schedules
+            schedules = task.get("schedules", [])
+            if schedules:
+                formatted_task["due_date"] = schedules[0].get("end_date")
+                formatted_task["start_date"] = schedules[0].get("start_date")
+
+            # Fallback to effective dates
+            if not formatted_task["due_date"]:
+                formatted_task["due_date"] = task.get("effective_due_date")
+            if not formatted_task["start_date"]:
+                formatted_task["start_date"] = task.get("effective_start_date")
+
+            formatted_tasks.append(formatted_task)
+
+        if ctx:
+            await ctx.info(f"Found {len(formatted_tasks)} tasks")
+
+        return {
+            "status": "success",
+            "public_id": public_id,
+            "view": view,
+            "count": len(formatted_tasks),
+            "tasks": formatted_tasks,
+        }
+
+    except Exception as e:
+        error_msg = f"Failed to get tasks: {str(e)}"
+        if ctx:
+            await ctx.error(error_msg)
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
