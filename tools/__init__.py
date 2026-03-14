@@ -27,3 +27,4 @@ def init_tools(server_instance: FastMCP) -> None:
     from . import discussion_tools
     from . import student_tools
     from . import drive_tools
+    from . import chapter_tools
