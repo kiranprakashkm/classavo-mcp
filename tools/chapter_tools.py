@@ -4,7 +4,10 @@ Handles course chapters (interactive textbooks) including content reading and na
 """
 
 import logging
-from typing import Any, Dict, Optional
+import random
+import string
+import uuid
+from typing import Any, Dict, List, Optional
 
 from fastmcp import Context
 
@@ -348,6 +351,318 @@ async def get_chapter_content(
 
     except Exception as e:
         error_msg = f"Failed to get chapter content: {str(e)}"
+        if ctx:
+            await ctx.error(error_msg)
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+
+
+def generate_question_id() -> str:
+    """Generate a UUID for a new question."""
+    return str(uuid.uuid4())
+
+
+def generate_node_id() -> str:
+    """Generate a short ID for Plate.js nodes."""
+    return ''.join(random.choices(string.ascii_letters + string.digits + '_-', k=10))
+
+
+def create_plate_text(text: str) -> list:
+    """Create a Plate.js paragraph with text."""
+    return [{"type": "p", "children": [{"text": text}], "id": generate_node_id()}]
+
+
+def create_mcq_question_data(
+    question_text: str,
+    options: list,
+    correct_index: int,
+    points: str = "1.0",
+    points_participation: str = "0.5",
+) -> tuple:
+    """
+    Create MCQ question data for embedding in a chapter.
+
+    Args:
+        question_text: The question text
+        options: List of answer option strings
+        correct_index: Index of the correct answer (0-based)
+        points: Points for correct answer
+        points_participation: Participation points
+
+    Returns:
+        Tuple of (question_id, question_node, question_data)
+    """
+    question_id = generate_question_id()
+
+    # Create the content node that embeds the question
+    question_node = {
+        "type": "classavo_chapter_question",
+        "question_id": question_id,
+        "children": [{"text": ""}],
+        "id": generate_node_id(),
+    }
+
+    # Create answer objects
+    answers = []
+    for i, option_text in enumerate(options):
+        answers.append({
+            "identity": generate_question_id(),
+            "title": create_plate_text(option_text),
+            "is_correct": i == correct_index,
+            "index": i,
+        })
+
+    # Create the question data for the questions.create section
+    question_data = {
+        "questions_and_answers_list": [{
+            "identity": f"new---{random.random()}",
+            "title": create_plate_text(question_text),
+            "answer": answers,
+        }],
+        "question_type": 1,  # 1 = multiple choice
+        "points": points,
+        "points_participation": points_participation,
+        "points_multiple_correct_policy": 5,
+        "is_extra_credit": False,
+        "max_attempts": 1,
+        "message_if_correct": "",
+        "message_if_incorrect": "",
+        "use_ai_message": False,
+        "feedback_type": 1,
+        "feedback_timing": 1,
+        "feedback_delay_days": 0,
+        "identity": question_id,
+    }
+
+    return question_id, question_node, question_data
+
+
+
+
+@mcp.tool(
+    name="add_chapter_question",
+    description="[PROFESSOR ONLY] Add a multiple choice question to a chapter. "
+    "The question will be embedded directly in the chapter content. "
+    "Options should be comma-separated, and correct_option_index is 0-based (0 for first option).",
+    tags={"chapters", "professor", "questions", "content"},
+)
+async def add_chapter_question(
+    chapter_id: str,
+    question_text: str,
+    options: str,
+    correct_option_index: int,
+    points: str = "1.0",
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """
+    Add a multiple choice question to a chapter.
+
+    Args:
+        chapter_id: The chapter UUID/identity
+        question_text: The question text
+        options: Comma-separated answer options (e.g., "Option A, Option B, Option C, Option D")
+        correct_option_index: Index of correct answer (0-based, e.g., 0 for first option)
+        points: Points for the question (default "1.0")
+        ctx: MCP context for logging
+
+    Returns:
+        Dict with created question info
+    """
+    try:
+        if ctx:
+            await ctx.info(f"Adding question to chapter {chapter_id}...")
+
+        client = get_client()
+
+        # Get current chapter content
+        chapter_info = await client.get(f"/api/file/{chapter_id}")
+        raw_content = chapter_info.get("content", {})
+
+        # Ensure content structure exists
+        if not isinstance(raw_content, dict):
+            raw_content = {"content": [], "questions": {"create": {}, "edit": {}, "delete": []}}
+
+        content_array = raw_content.get("content", [])
+        questions_obj = raw_content.get("questions", {"create": {}, "edit": {}, "delete": []})
+
+        if "create" not in questions_obj:
+            questions_obj["create"] = {}
+        if "edit" not in questions_obj:
+            questions_obj["edit"] = {}
+        if "delete" not in questions_obj:
+            questions_obj["delete"] = []
+
+        # Parse options
+        option_list = [opt.strip() for opt in options.split(",")]
+        if len(option_list) < 2:
+            raise ValueError("At least 2 options are required")
+        if correct_option_index < 0 or correct_option_index >= len(option_list):
+            raise ValueError(f"correct_option_index must be between 0 and {len(option_list) - 1}")
+
+        # Create the question
+        question_id, question_node, question_data = create_mcq_question_data(
+            question_text=question_text,
+            options=option_list,
+            correct_index=correct_option_index,
+            points=points,
+        )
+
+        # Add question node to content (before the last empty paragraph if exists)
+        # Also add an empty paragraph after the question
+        empty_para = {"type": "p", "id": generate_node_id(), "children": [{"text": ""}]}
+        content_array.append(question_node)
+        content_array.append(empty_para)
+
+        # Add question data to questions.create
+        questions_obj["create"][question_id] = question_data
+
+        # Update the chapter
+        updated_content = {
+            "content": content_array,
+            "questions": questions_obj,
+        }
+
+        result = await client.put(
+            f"/api/file/{chapter_id}",
+            data={"content": updated_content},
+        )
+
+        if ctx:
+            await ctx.info(f"Question added successfully!")
+
+        return {
+            "status": "success",
+            "message": "Question added to chapter",
+            "chapter_id": chapter_id,
+            "question_id": question_id,
+            "question_text": question_text,
+            "options": option_list,
+            "correct_option": option_list[correct_option_index],
+        }
+
+    except Exception as e:
+        error_msg = f"Failed to add chapter question: {str(e)}"
+        if ctx:
+            await ctx.error(error_msg)
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+
+
+@mcp.tool(
+    name="add_multiple_chapter_questions",
+    description="[PROFESSOR ONLY] Add multiple MCQ questions to a chapter at once. "
+    "Each question should be a JSON object with: question_text, options (array), correct_option_index. "
+    "Example: [{\"question_text\": \"What is X?\", \"options\": [\"A\", \"B\", \"C\"], \"correct_option_index\": 0}]",
+    tags={"chapters", "professor", "questions", "content"},
+)
+async def add_multiple_chapter_questions(
+    chapter_id: str,
+    questions_json: str,
+    points_per_question: str = "1.0",
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """
+    Add multiple MCQ questions to a chapter.
+
+    Args:
+        chapter_id: The chapter UUID/identity
+        questions_json: JSON array of questions, each with question_text, options, correct_option_index
+        points_per_question: Points for each question (default "1.0")
+        ctx: MCP context for logging
+
+    Returns:
+        Dict with created questions info
+    """
+    import json
+
+    try:
+        if ctx:
+            await ctx.info(f"Adding multiple questions to chapter {chapter_id}...")
+
+        # Parse questions JSON
+        try:
+            questions_list = json.loads(questions_json)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON: {e}")
+
+        if not isinstance(questions_list, list):
+            raise ValueError("questions_json must be a JSON array")
+
+        client = get_client()
+
+        # Get current chapter content
+        chapter_info = await client.get(f"/api/file/{chapter_id}")
+        raw_content = chapter_info.get("content", {})
+
+        # Ensure content structure exists
+        if not isinstance(raw_content, dict):
+            raw_content = {"content": [], "questions": {"create": {}, "edit": {}, "delete": []}}
+
+        content_array = raw_content.get("content", [])
+        questions_obj = raw_content.get("questions", {"create": {}, "edit": {}, "delete": []})
+
+        if "create" not in questions_obj:
+            questions_obj["create"] = {}
+        if "edit" not in questions_obj:
+            questions_obj["edit"] = {}
+        if "delete" not in questions_obj:
+            questions_obj["delete"] = []
+
+        added_questions = []
+
+        for q in questions_list:
+            question_text = q.get("question_text", "")
+            options = q.get("options", [])
+            correct_index = q.get("correct_option_index", 0)
+
+            if not question_text or len(options) < 2:
+                continue
+
+            # Create the question
+            question_id, question_node, question_data = create_mcq_question_data(
+                question_text=question_text,
+                options=options,
+                correct_index=correct_index,
+                points=points_per_question,
+            )
+
+            # Add question node to content
+            empty_para = {"type": "p", "id": generate_node_id(), "children": [{"text": ""}]}
+            content_array.append(question_node)
+            content_array.append(empty_para)
+
+            # Add question data to questions.create
+            questions_obj["create"][question_id] = question_data
+
+            added_questions.append({
+                "question_id": question_id,
+                "question_text": question_text,
+                "correct_answer": options[correct_index] if correct_index < len(options) else None,
+            })
+
+        # Update the chapter
+        updated_content = {
+            "content": content_array,
+            "questions": questions_obj,
+        }
+
+        result = await client.put(
+            f"/api/file/{chapter_id}",
+            data={"content": updated_content},
+        )
+
+        if ctx:
+            await ctx.info(f"Added {len(added_questions)} questions successfully!")
+
+        return {
+            "status": "success",
+            "message": f"Added {len(added_questions)} questions to chapter",
+            "chapter_id": chapter_id,
+            "questions_added": added_questions,
+        }
+
+    except Exception as e:
+        error_msg = f"Failed to add chapter questions: {str(e)}"
         if ctx:
             await ctx.error(error_msg)
         logger.error(error_msg)
