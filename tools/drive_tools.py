@@ -432,8 +432,9 @@ async def get_item_schedules(
 
 @mcp.tool(
     name="set_item_schedule",
-    description="[PROFESSOR ONLY] Set the schedule (start/due date) for a drive item.",
-    tags={"drive", "professor", "schedules"},
+    description="[PROFESSOR ONLY] Set or update the schedule (start date and due date) for a drive item. "
+    "Use this to assign due dates to assignments, files, folders, or playlists.",
+    tags={"drive", "professor", "schedules", "due_date", "deadline"},
 )
 async def set_item_schedule(
     item_id: str,
@@ -443,7 +444,7 @@ async def set_item_schedule(
     ctx: Context = None,
 ) -> Dict[str, Any]:
     """
-    Set schedule for a drive item.
+    Set schedule (start/due date) for a drive item.
 
     Args:
         item_id: The item UUID
@@ -462,7 +463,7 @@ async def set_item_schedule(
         client = get_client()
 
         schedule = {
-            "scope": "all",
+            "scope": 1,  # 1 = all students
             "targets": [],
         }
         if start_date:
@@ -470,10 +471,12 @@ async def set_item_schedule(
         if end_date:
             schedule["end_date"] = end_date
 
-        result = await client.put(
-            f"/api/v2/drive/items/{item_type}/{item_id}/schedules",
+        # Use assign-v3 endpoint which works for setting schedules
+        result = await client.post(
+            f"/api/v2/drive/items/{item_id}/assign-v3",
             data={
                 "item_type": item_type,
+                "include_subfolders": False,
                 "schedules": [schedule],
             },
         )
@@ -486,11 +489,69 @@ async def set_item_schedule(
             "message": "Schedule updated",
             "item_id": item_id,
             "item_type": item_type,
+            "start_date": start_date,
+            "end_date": end_date,
             "result": result,
         }
 
     except Exception as e:
         error_msg = f"Failed to set schedule: {str(e)}"
+        if ctx:
+            await ctx.error(error_msg)
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+
+
+@mcp.tool(
+    name="remove_item_schedule",
+    description="[PROFESSOR ONLY] Remove the schedule (unassign) from a drive item.",
+    tags={"drive", "professor", "schedules"},
+)
+async def remove_item_schedule(
+    item_id: str,
+    item_type: str,
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """
+    Remove schedule from a drive item.
+
+    Args:
+        item_id: The item UUID
+        item_type: Type of item (file, folder, assignment, playlist)
+        ctx: MCP context for logging
+
+    Returns:
+        Dict with result
+    """
+    try:
+        if ctx:
+            await ctx.info(f"Removing schedule from {item_type} {item_id}...")
+
+        client = get_client()
+
+        # Set empty schedules to remove assignment
+        result = await client.post(
+            f"/api/v2/drive/items/{item_id}/assign-v3",
+            data={
+                "item_type": item_type,
+                "include_subfolders": False,
+                "schedules": [],
+            },
+        )
+
+        if ctx:
+            await ctx.info("Schedule removed!")
+
+        return {
+            "status": "success",
+            "message": "Schedule removed",
+            "item_id": item_id,
+            "item_type": item_type,
+            "result": result,
+        }
+
+    except Exception as e:
+        error_msg = f"Failed to remove schedule: {str(e)}"
         if ctx:
             await ctx.error(error_msg)
         logger.error(error_msg)
