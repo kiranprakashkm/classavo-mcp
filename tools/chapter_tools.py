@@ -476,14 +476,23 @@ async def add_chapter_question(
 
         # Get current chapter content
         chapter_info = await client.get(f"/api/file/{chapter_id}")
+
+        # The API response has 'content' field containing both content array and questions
         raw_content = chapter_info.get("content", {})
 
         # Ensure content structure exists
         if not isinstance(raw_content, dict):
             raw_content = {"content": [], "questions": {"create": {}, "edit": {}, "delete": []}}
 
+        # Extract the content array (list of Plate.js nodes)
         content_array = raw_content.get("content", [])
-        questions_obj = raw_content.get("questions", {"create": {}, "edit": {}, "delete": []})
+        if not isinstance(content_array, list):
+            content_array = []
+
+        # Extract the questions object
+        questions_obj = raw_content.get("questions", {})
+        if not isinstance(questions_obj, dict):
+            questions_obj = {}
 
         if "create" not in questions_obj:
             questions_obj["create"] = {}
@@ -516,15 +525,13 @@ async def add_chapter_question(
         # Add question data to questions.create
         questions_obj["create"][question_id] = question_data
 
-        # Update the chapter
-        updated_content = {
-            "content": content_array,
-            "questions": questions_obj,
-        }
-
+        # Update the chapter - content and questions at top level, not nested
         result = await client.put(
             f"/api/file/{chapter_id}",
-            data={"content": updated_content},
+            data={
+                "content": content_array,
+                "questions": questions_obj,
+            },
         )
 
         if ctx:
@@ -592,14 +599,23 @@ async def add_multiple_chapter_questions(
 
         # Get current chapter content
         chapter_info = await client.get(f"/api/file/{chapter_id}")
+
+        # The API response has 'content' field containing both content array and questions
         raw_content = chapter_info.get("content", {})
 
         # Ensure content structure exists
         if not isinstance(raw_content, dict):
             raw_content = {"content": [], "questions": {"create": {}, "edit": {}, "delete": []}}
 
+        # Extract the content array (list of Plate.js nodes)
         content_array = raw_content.get("content", [])
-        questions_obj = raw_content.get("questions", {"create": {}, "edit": {}, "delete": []})
+        if not isinstance(content_array, list):
+            content_array = []
+
+        # Extract the questions object
+        questions_obj = raw_content.get("questions", {})
+        if not isinstance(questions_obj, dict):
+            questions_obj = {}
 
         if "create" not in questions_obj:
             questions_obj["create"] = {}
@@ -640,15 +656,13 @@ async def add_multiple_chapter_questions(
                 "correct_answer": options[correct_index] if correct_index < len(options) else None,
             })
 
-        # Update the chapter
-        updated_content = {
-            "content": content_array,
-            "questions": questions_obj,
-        }
-
+        # Update the chapter - content and questions at top level, not nested
         result = await client.put(
             f"/api/file/{chapter_id}",
-            data={"content": updated_content},
+            data={
+                "content": content_array,
+                "questions": questions_obj,
+            },
         )
 
         if ctx:
