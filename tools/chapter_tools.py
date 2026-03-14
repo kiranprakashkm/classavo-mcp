@@ -376,11 +376,16 @@ def create_mcq_question_data(
     question_text: str,
     options: list,
     correct_index: int,
-    points: str = "1.0",
+    points: str = "0.5",
     points_participation: str = "0.5",
 ) -> tuple:
     """
     Create MCQ question data for embedding in a chapter.
+
+    Based on Classavo API schema:
+    - question_type: 1 = MULTIPLE_CHOICE
+    - title: Question text (HTML string or Slate JSON)
+    - answer: Array of {identity, title, is_correct, index}
 
     Args:
         question_text: The question text
@@ -390,51 +395,46 @@ def create_mcq_question_data(
         points_participation: Participation points
 
     Returns:
-        Tuple of (question_id, question_node, question_data)
+        Tuple of (question_key, question_node, question_data)
     """
-    question_id = generate_question_id()
+    # Generate a temporary key for the new question (used to link node to data)
+    question_key = f"new-question-{generate_node_id()}"
 
     # Create the content node that embeds the question
     question_node = {
         "type": "classavo_chapter_question",
-        "question_id": question_id,
+        "question_id": question_key,  # Temporary key, backend replaces with UUID
         "children": [{"text": ""}],
         "id": generate_node_id(),
     }
 
-    # Create answer objects
+    # Create answer objects per API schema
     answers = []
     for i, option_text in enumerate(options):
         answers.append({
-            "identity": generate_question_id(),
-            "title": create_plate_text(option_text),
+            "identity": f"option-{generate_node_id()}",
+            "title": f"<p>{option_text}</p>",  # HTML string format
             "is_correct": i == correct_index,
             "index": i,
         })
 
-    # Create the question data for the questions.create section
+    # Create the question data for questions.create[question_key]
+    # Using flat title/answer format as per API schema for chapter PUT
     question_data = {
-        "questions_and_answers_list": [{
-            "identity": f"new---{random.random()}",
-            "title": create_plate_text(question_text),
-            "answer": answers,
-        }],
-        "question_type": 1,  # 1 = multiple choice
+        "question_type": 1,  # 1 = MULTIPLE_CHOICE
+        "title": f"<p>{question_text}</p>",  # HTML string format
+        "answer": answers,
         "points": points,
         "points_participation": points_participation,
-        "points_multiple_correct_policy": 5,
-        "is_extra_credit": False,
-        "max_attempts": 1,
+        "points_multiple_correct_policy": 1,
+        "max_attempts": 2,
         "message_if_correct": "",
         "message_if_incorrect": "",
-        "use_ai_message": False,
-        "feedback_type": 1,
-        "feedback_timing": 1,
-        "feedback_delay_days": 0,
-        "identity": question_id,
+        "use_ai_message": True,
+        "is_extra_credit": False,
     }
 
-    return question_id, question_node, question_data
+    return question_key, question_node, question_data
 
 
 
