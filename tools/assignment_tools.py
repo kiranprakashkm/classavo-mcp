@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 @mcp.tool(
     name="list_assignments",
-    description="List all assignments for a course. Use the course public_id (e.g., 'WMYDQWU'), not the UUID.",
+    description="List all assignments for a course with due dates. Use the course public_id (e.g., 'WMYDQWU'), not the UUID.",
     tags={"assignments", "professor", "student"},
 )
 async def list_assignments(
@@ -21,23 +21,61 @@ async def list_assignments(
     ctx: Context = None,
 ) -> Dict[str, Any]:
     """
-    List all assignments for a course.
+    List all assignments for a course with due dates from schedules.
 
     Args:
         public_id: The course public ID (e.g., 'WMYDQWU')
         ctx: MCP context for logging
 
     Returns:
-        Dict with list of assignments
+        Dict with list of assignments including due dates
     """
     try:
         if ctx:
             await ctx.info(f"Fetching assignments for course {public_id}...")
 
         client = get_client()
-        result = await client.get(f"/api/courses/{public_id}/assignments")
 
+        # Get assignments list
+        result = await client.get(f"/api/courses/{public_id}/assignments")
         assignments = result if isinstance(result, list) else result.get("results", result.get("assignments", []))
+
+        # Get scheduled tasks (contains actual due dates)
+        try:
+            tasks_result = await client.get(f"/api/v2/dashboard/{public_id}/tasks/")
+            tasks = tasks_result.get("results", []) if isinstance(tasks_result, dict) else tasks_result
+
+            # Build a map of assignment identity -> schedule info
+            schedule_map = {}
+            for task in tasks:
+                if task.get("item_type") == "assignment" and task.get("schedules"):
+                    identity = task.get("identity")
+                    schedules = task.get("schedules", [])
+                    if schedules:
+                        # Use the first schedule's end_date as due date
+                        schedule_map[identity] = {
+                            "due_date": schedules[0].get("end_date"),
+                            "start_date": schedules[0].get("start_date"),
+                            "schedules": schedules,
+                        }
+
+            # Merge schedule info into assignments
+            for assignment in assignments:
+                identity = assignment.get("identity")
+                if identity in schedule_map:
+                    assignment["due_date"] = schedule_map[identity]["due_date"]
+                    assignment["start_date"] = schedule_map[identity]["start_date"]
+                    assignment["has_schedule"] = True
+                else:
+                    assignment["due_date"] = assignment.get("effective_due_date")
+                    assignment["has_schedule"] = False
+
+        except Exception as e:
+            # If tasks endpoint fails, continue with assignments only
+            logger.warning(f"Could not fetch scheduled tasks: {e}")
+            for assignment in assignments:
+                assignment["due_date"] = assignment.get("effective_due_date")
+                assignment["has_schedule"] = False
 
         if ctx:
             await ctx.info(f"Found {len(assignments)} assignments")
