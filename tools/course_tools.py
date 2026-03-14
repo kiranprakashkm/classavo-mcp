@@ -77,7 +77,7 @@ async def get_course(
             await ctx.info(f"Fetching course {course_id}...")
 
         client = get_client()
-        result = await client.get(f"/api/courses/{course_id}/")
+        result = await client.get(f"/api/courses/{course_id}")
 
         if ctx:
             await ctx.info(f"Found course: {result.get('name', 'Unknown')}")
@@ -173,7 +173,7 @@ async def get_course_roster(
             await ctx.info(f"Fetching roster for course {course_id}...")
 
         client = get_client()
-        result = await client.get(f"/api/courses/{course_id}/students/")
+        result = await client.get(f"/api/courses/{course_id}/students")
 
         students = result if isinstance(result, list) else result.get("students", [])
 
@@ -219,7 +219,7 @@ async def get_course_instructors(
             await ctx.info(f"Fetching instructors for course {course_id}...")
 
         client = get_client()
-        result = await client.get(f"/api/courses/{course_id}/instructors/")
+        result = await client.get(f"/api/courses/{course_id}/instructors")
 
         instructors = result if isinstance(result, list) else result.get("instructors", [])
 
@@ -362,7 +362,7 @@ async def get_course_analytics(
             await ctx.info(f"Fetching analytics for course {course_id}...")
 
         client = get_client()
-        result = await client.get(f"/api/v2/insights/", params={"course": course_id})
+        result = await client.get(f"/api/v2/insights/{course_id}/")
 
         if ctx:
             await ctx.info("Analytics loaded successfully")

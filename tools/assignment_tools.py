@@ -13,18 +13,18 @@ logger = logging.getLogger(__name__)
 
 @mcp.tool(
     name="list_assignments",
-    description="List all assignments for a course.",
+    description="List all assignments for a course. Use the course public_id (e.g., 'WMYDQWU'), not the UUID.",
     tags={"assignments", "professor", "student"},
 )
 async def list_assignments(
-    course_id: str,
+    public_id: str,
     ctx: Context = None,
 ) -> Dict[str, Any]:
     """
     List all assignments for a course.
 
     Args:
-        course_id: The course ID
+        public_id: The course public ID (e.g., 'WMYDQWU')
         ctx: MCP context for logging
 
     Returns:
@@ -32,10 +32,10 @@ async def list_assignments(
     """
     try:
         if ctx:
-            await ctx.info(f"Fetching assignments for course {course_id}...")
+            await ctx.info(f"Fetching assignments for course {public_id}...")
 
         client = get_client()
-        result = await client.get(f"/api/assignments/", params={"course": course_id})
+        result = await client.get(f"/api/courses/{public_id}/assignments")
 
         assignments = result if isinstance(result, list) else result.get("results", result.get("assignments", []))
 
@@ -44,7 +44,7 @@ async def list_assignments(
 
         return {
             "status": "success",
-            "course_id": course_id,
+            "public_id": public_id,
             "count": len(assignments),
             "assignments": assignments,
         }
@@ -81,7 +81,7 @@ async def get_assignment(
             await ctx.info(f"Fetching assignment {assignment_id}...")
 
         client = get_client()
-        result = await client.get(f"/api/assignments/{assignment_id}/")
+        result = await client.get(f"/api/assignments/{assignment_id}")
 
         if ctx:
             await ctx.info(f"Found assignment: {result.get('name', 'Unknown')}")
@@ -143,7 +143,7 @@ async def create_assignment(
         if due_date:
             data["due_date"] = due_date
 
-        result = await client.post("/api/assignments/", data=data)
+        result = await client.post(f"/api/courses/{course_id}/assignments", data=data)
 
         if ctx:
             await ctx.info(f"Assignment '{name}' created successfully!")
@@ -204,7 +204,7 @@ async def update_assignment(
         if points is not None:
             data["points"] = points
 
-        result = await client.patch(f"/api/assignments/{assignment_id}/", data=data)
+        result = await client.patch(f"/api/assignments/{assignment_id}", data=data)
 
         if ctx:
             await ctx.info("Assignment updated successfully!")
@@ -247,7 +247,7 @@ async def delete_assignment(
             await ctx.info(f"Deleting assignment {assignment_id}...")
 
         client = get_client()
-        await client.delete(f"/api/assignments/{assignment_id}/")
+        await client.delete(f"/api/assignments/{assignment_id}")
 
         if ctx:
             await ctx.info("Assignment deleted successfully!")
@@ -290,7 +290,7 @@ async def get_assignment_questions(
             await ctx.info(f"Fetching questions for assignment {assignment_id}...")
 
         client = get_client()
-        result = await client.get(f"/api/assignments/{assignment_id}/questions/")
+        result = await client.get(f"/api/assignments/{assignment_id}/questions")
 
         questions = result if isinstance(result, list) else result.get("questions", [])
 
@@ -372,7 +372,7 @@ async def create_question(
         if correct_answer:
             data["correct_answer"] = correct_answer
 
-        result = await client.post(f"/api/assignments/{assignment_id}/questions/", data=data)
+        result = await client.post(f"/api/assignments/{assignment_id}/questions", data=data)
 
         if ctx:
             await ctx.info("Question created successfully!")
@@ -421,7 +421,7 @@ async def clone_assignment(
         if target_course_id:
             data["target_course"] = target_course_id
 
-        result = await client.post(f"/api/assignments/{assignment_id}/clone/", data=data)
+        result = await client.post(f"/api/assignments/{assignment_id}/clone", data=data)
 
         if ctx:
             await ctx.info("Assignment cloned successfully!")

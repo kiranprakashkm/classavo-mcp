@@ -35,7 +35,7 @@ async def list_polls(
             await ctx.info(f"Fetching polls for course {course_id}...")
 
         client = get_client()
-        result = await client.get("/api/v2/polling/", params={"course": course_id})
+        result = await client.get("/api/v2/polling/polls/", params={"course_id": course_id})
 
         polls = result if isinstance(result, list) else result.get("results", [])
 
@@ -98,7 +98,7 @@ async def create_poll(
             "allow_multiple": allow_multiple,
         }
 
-        result = await client.post("/api/v2/polling/", data=data)
+        result = await client.post("/api/v2/polling/polls/", data=data)
 
         if ctx:
             await ctx.info("Poll created successfully!")
@@ -144,8 +144,8 @@ async def start_poll(
 
         client = get_client()
         result = await client.post(
-            f"/api/v2/polling/{poll_id}/start/",
-            data={"duration": duration_seconds},
+            f"/api/v2/polling/polls/{poll_id}/activate/",
+            data={"timer_seconds": duration_seconds},
         )
 
         if ctx:
@@ -190,7 +190,7 @@ async def end_poll(
             await ctx.info(f"Ending poll {poll_id}...")
 
         client = get_client()
-        result = await client.post(f"/api/v2/polling/{poll_id}/end/")
+        result = await client.post(f"/api/v2/polling/polls/{poll_id}/close/")
 
         if ctx:
             await ctx.info("Poll ended")
@@ -234,7 +234,7 @@ async def get_poll_results(
             await ctx.info(f"Fetching results for poll {poll_id}...")
 
         client = get_client()
-        result = await client.get(f"/api/v2/polling/{poll_id}/results/")
+        result = await client.get(f"/api/v2/polling/polls/{poll_id}/responses/")
 
         if ctx:
             await ctx.info("Poll results loaded")
@@ -277,7 +277,7 @@ async def delete_poll(
             await ctx.info(f"Deleting poll {poll_id}...")
 
         client = get_client()
-        await client.delete(f"/api/v2/polling/{poll_id}/")
+        await client.delete(f"/api/v2/polling/polls/{poll_id}/")
 
         if ctx:
             await ctx.info("Poll deleted successfully")
@@ -323,8 +323,8 @@ async def vote_in_poll(
 
         client = get_client()
         result = await client.post(
-            f"/api/v2/polling/{poll_id}/vote/",
-            data={"option": option_id},
+            f"/api/v2/polling/polls/{poll_id}/responses/",
+            data={"selected_choices": [option_id]},
         )
 
         if ctx:

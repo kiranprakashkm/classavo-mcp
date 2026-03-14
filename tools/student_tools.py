@@ -46,10 +46,7 @@ async def view_my_grades(
 
         client = get_client()
         # API endpoint returns ONLY the logged-in student's grades
-        result = await client.get(
-            "/api/v2/gradebook/student/",
-            params={"course": course_id},
-        )
+        result = await client.get(f"/api/courses/{course_id}/gradebook/me")
 
         if ctx:
             await ctx.info("Your grades loaded successfully")
@@ -197,7 +194,7 @@ async def check_in_attendance(
 
         client = get_client()
         result = await client.post(
-            "/api/v2/attendance/checkin/",
+            "/api/v2/attendance/record/",
             data={"code": code},
         )
 
@@ -245,10 +242,7 @@ async def view_my_attendance(
             await ctx.info(f"Fetching your attendance for course {course_id}...")
 
         client = get_client()
-        result = await client.get(
-            "/api/v2/attendance/student/",
-            params={"course": course_id},
-        )
+        result = await client.get("/api/v2/attendance/sessions/active/student/")
 
         if ctx:
             await ctx.info("Your attendance record loaded")
@@ -383,8 +377,8 @@ async def get_active_polls(
 
         client = get_client()
         result = await client.get(
-            "/api/v2/polling/active/",
-            params={"course": course_id},
+            "/api/v2/polling/polls/",
+            params={"course_id": course_id, "is_active": "true"},
         )
 
         polls = result if isinstance(result, list) else result.get("polls", [])
@@ -437,7 +431,7 @@ async def global_search(
         if course_id:
             params["course"] = course_id
 
-        result = await client.get("/api/v2/search/", params=params)
+        result = await client.get("/api/v2/search/", params=params if params else {"q": query})
 
         if ctx:
             await ctx.info("Search completed")

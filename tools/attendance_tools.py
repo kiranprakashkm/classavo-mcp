@@ -38,11 +38,15 @@ async def start_attendance_session(
             await ctx.info(f"Starting attendance session for course {course_id}...")
 
         client = get_client()
+        # Get today's date in ISO format
+        from datetime import date
+        today = date.today().isoformat()
+
         result = await client.post(
-            "/api/v2/attendance/sessions/",
+            "/api/v2/attendance/sessions/start/",
             data={
-                "course": course_id,
-                "duration_minutes": duration_minutes,
+                "course_public_id": course_id,
+                "attendance_date": today,
             },
         )
 
@@ -74,14 +78,16 @@ async def start_attendance_session(
     tags={"attendance", "professor"},
 )
 async def end_attendance_session(
-    session_id: str,
+    course_id: str,
+    session_code: str,
     ctx: Context = None,
 ) -> Dict[str, Any]:
     """
     End an attendance session.
 
     Args:
-        session_id: The attendance session ID
+        course_id: The course public ID
+        session_code: The attendance session code (e.g., "12345")
         ctx: MCP context for logging
 
     Returns:
@@ -89,10 +95,13 @@ async def end_attendance_session(
     """
     try:
         if ctx:
-            await ctx.info(f"Ending attendance session {session_id}...")
+            await ctx.info(f"Ending attendance session {session_code}...")
 
         client = get_client()
-        result = await client.post(f"/api/v2/attendance/sessions/{session_id}/end/")
+        result = await client.post(
+            "/api/v2/attendance/sessions/end/",
+            data={"code": session_code, "course_public_id": course_id},
+        )
 
         if ctx:
             await ctx.info("Attendance session ended")
@@ -100,7 +109,7 @@ async def end_attendance_session(
         return {
             "status": "success",
             "message": "Attendance session ended",
-            "session_id": session_id,
+            "session_code": session_code,
             "result": result,
         }
 
@@ -137,8 +146,7 @@ async def get_active_sessions(
 
         client = get_client()
         result = await client.get(
-            "/api/v2/attendance/sessions/active/",
-            params={"course": course_id},
+            f"/api/v2/attendance/sessions/active/courses/{course_id}/",
         )
 
         sessions = result if isinstance(result, list) else result.get("sessions", [])
@@ -189,13 +197,13 @@ async def get_attendance_report(
             await ctx.info(f"Fetching attendance report for course {course_id}...")
 
         client = get_client()
-        params = {"course": course_id}
+        params = {}
         if start_date:
             params["start_date"] = start_date
         if end_date:
             params["end_date"] = end_date
 
-        result = await client.get("/api/v2/attendance/report/", params=params)
+        result = await client.get(f"/api/v2/attendance/report/{course_id}/", params=params if params else None)
 
         if ctx:
             await ctx.info("Attendance report loaded")

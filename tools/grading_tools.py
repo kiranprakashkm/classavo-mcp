@@ -13,20 +13,18 @@ logger = logging.getLogger(__name__)
 
 @mcp.tool(
     name="list_submissions",
-    description="[PROFESSOR ONLY] List all submissions for an assignment.",
+    description="[PROFESSOR ONLY] List all submissions for a question.",
     tags={"grading", "professor", "submissions"},
 )
 async def list_submissions(
-    assignment_id: str,
-    status: str = None,
+    question_id: str,
     ctx: Context = None,
 ) -> Dict[str, Any]:
     """
-    List submissions for an assignment.
+    List submissions for a question.
 
     Args:
-        assignment_id: The assignment ID
-        status: Filter by status (pending, graded, etc.)
+        question_id: The question ID (UUID)
         ctx: MCP context for logging
 
     Returns:
@@ -34,14 +32,10 @@ async def list_submissions(
     """
     try:
         if ctx:
-            await ctx.info(f"Fetching submissions for assignment {assignment_id}...")
+            await ctx.info(f"Fetching submissions for question {question_id}...")
 
         client = get_client()
-        params = {"assignment": assignment_id}
-        if status:
-            params["status"] = status
-
-        result = await client.get("/api/v2/submissions/", params=params)
+        result = await client.get(f"/api/questions/{question_id}/submissions")
 
         submissions = result if isinstance(result, list) else result.get("results", [])
 
@@ -50,7 +44,7 @@ async def list_submissions(
 
         return {
             "status": "success",
-            "assignment_id": assignment_id,
+            "question_id": question_id,
             "count": len(submissions),
             "submissions": submissions,
         }
@@ -188,7 +182,7 @@ async def get_gradebook(
         if user_data.get("role") != 2:
             raise PermissionError("Only professors can view the full gradebook")
 
-        result = await client.get(f"/api/assignments/{course_id}/gradebook/")
+        result = await client.get(f"/api/courses/{course_id}/gradebook/all")
 
         if ctx:
             await ctx.info("Gradebook loaded successfully")
@@ -297,9 +291,8 @@ async def export_gradebook(
         }
         export_format = format_map.get(format.lower(), "classavo")
 
-        result = await client.get(
-            f"/api/v2/gradebook/export/{export_format}/",
-            params={"course": course_id},
+        result = await client.post(
+            f"/api/v2/gradebook/course/{course_id}/export/{export_format}",
         )
 
         if ctx:
