@@ -477,29 +477,41 @@ async def add_chapter_question(
         # Get current chapter content
         chapter_info = await client.get(f"/api/file/{chapter_id}")
 
-        # The API response has 'content' field containing both content array and questions
-        raw_content = chapter_info.get("content", {})
+        # The 'content' field from API can be:
+        # 1. An object: {"content": [...nodes...], "questions": {...}}
+        # 2. A list directly: [...nodes...]
+        raw_content = chapter_info.get("content")
 
-        # Ensure content structure exists
-        if not isinstance(raw_content, dict):
-            raw_content = {"content": [], "questions": {"create": {}, "edit": {}, "delete": []}}
+        # Determine the structure and extract content array and questions
+        if isinstance(raw_content, dict):
+            # Structure: {"content": [...], "questions": {...}}
+            content_array = raw_content.get("content", [])
+            questions_obj = raw_content.get("questions", {})
+        elif isinstance(raw_content, list):
+            # Structure: [...] (direct array of nodes)
+            content_array = raw_content
+            questions_obj = {}
+        else:
+            # No content yet
+            content_array = []
+            questions_obj = {}
 
-        # Extract the content array (list of Plate.js nodes)
-        content_array = raw_content.get("content", [])
+        # Ensure content_array is a list
         if not isinstance(content_array, list):
             content_array = []
 
-        # Extract the questions object
-        questions_obj = raw_content.get("questions", {})
+        # Ensure questions_obj has required structure
         if not isinstance(questions_obj, dict):
             questions_obj = {}
-
         if "create" not in questions_obj:
             questions_obj["create"] = {}
         if "edit" not in questions_obj:
             questions_obj["edit"] = {}
         if "delete" not in questions_obj:
             questions_obj["delete"] = []
+
+        # Log current content for debugging
+        logger.info(f"Chapter {chapter_id}: Found {len(content_array)} existing content nodes")
 
         # Parse options
         option_list = [opt.strip() for opt in options.split(",")]
@@ -516,21 +528,31 @@ async def add_chapter_question(
             points=points,
         )
 
-        # Add question node to content (before the last empty paragraph if exists)
+        # Make a copy of the content array to avoid modifying the original
+        updated_content = list(content_array)
+
+        # Add question node to the end of content
         # Also add an empty paragraph after the question
         empty_para = {"type": "p", "id": generate_node_id(), "children": [{"text": ""}]}
-        content_array.append(question_node)
-        content_array.append(empty_para)
+        updated_content.append(question_node)
+        updated_content.append(empty_para)
 
-        # Add question data to questions.create
-        questions_obj["create"][question_id] = question_data
+        # For questions, we only add to 'create' - keep existing questions in edit
+        # Clear create/delete for this request, only add our new question
+        questions_payload = {
+            "create": {question_id: question_data},
+            "edit": {},  # Don't modify existing questions
+            "delete": [],  # Don't delete any questions
+        }
 
-        # Update the chapter - content and questions at top level, not nested
+        logger.info(f"Sending content with {len(updated_content)} nodes, adding question {question_id}")
+
+        # Update the chapter - content is array, questions is object
         result = await client.put(
             f"/api/file/{chapter_id}",
             data={
-                "content": content_array,
-                "questions": questions_obj,
+                "content": updated_content,
+                "questions": questions_payload,
             },
         )
 
@@ -600,30 +622,34 @@ async def add_multiple_chapter_questions(
         # Get current chapter content
         chapter_info = await client.get(f"/api/file/{chapter_id}")
 
-        # The API response has 'content' field containing both content array and questions
-        raw_content = chapter_info.get("content", {})
+        # The 'content' field from API can be:
+        # 1. An object: {"content": [...nodes...], "questions": {...}}
+        # 2. A list directly: [...nodes...]
+        raw_content = chapter_info.get("content")
 
-        # Ensure content structure exists
-        if not isinstance(raw_content, dict):
-            raw_content = {"content": [], "questions": {"create": {}, "edit": {}, "delete": []}}
+        # Determine the structure and extract content array
+        if isinstance(raw_content, dict):
+            # Structure: {"content": [...], "questions": {...}}
+            content_array = raw_content.get("content", [])
+        elif isinstance(raw_content, list):
+            # Structure: [...] (direct array of nodes)
+            content_array = raw_content
+        else:
+            # No content yet
+            content_array = []
 
-        # Extract the content array (list of Plate.js nodes)
-        content_array = raw_content.get("content", [])
+        # Ensure content_array is a list
         if not isinstance(content_array, list):
             content_array = []
 
-        # Extract the questions object
-        questions_obj = raw_content.get("questions", {})
-        if not isinstance(questions_obj, dict):
-            questions_obj = {}
+        # Log current content for debugging
+        logger.info(f"Chapter {chapter_id}: Found {len(content_array)} existing content nodes")
 
-        if "create" not in questions_obj:
-            questions_obj["create"] = {}
-        if "edit" not in questions_obj:
-            questions_obj["edit"] = {}
-        if "delete" not in questions_obj:
-            questions_obj["delete"] = []
+        # Make a copy of the content array to preserve existing content
+        updated_content = list(content_array)
 
+        # Track new questions to create
+        new_questions = {}
         added_questions = []
 
         for q in questions_list:
@@ -644,11 +670,11 @@ async def add_multiple_chapter_questions(
 
             # Add question node to content
             empty_para = {"type": "p", "id": generate_node_id(), "children": [{"text": ""}]}
-            content_array.append(question_node)
-            content_array.append(empty_para)
+            updated_content.append(question_node)
+            updated_content.append(empty_para)
 
-            # Add question data to questions.create
-            questions_obj["create"][question_id] = question_data
+            # Add question data to create map
+            new_questions[question_id] = question_data
 
             added_questions.append({
                 "question_id": question_id,
@@ -656,12 +682,21 @@ async def add_multiple_chapter_questions(
                 "correct_answer": options[correct_index] if correct_index < len(options) else None,
             })
 
-        # Update the chapter - content and questions at top level, not nested
+        # Build questions payload - only add new questions, don't modify existing
+        questions_payload = {
+            "create": new_questions,
+            "edit": {},  # Don't modify existing questions
+            "delete": [],  # Don't delete any questions
+        }
+
+        logger.info(f"Sending content with {len(updated_content)} nodes, adding {len(new_questions)} questions")
+
+        # Update the chapter - content is array, questions is object
         result = await client.put(
             f"/api/file/{chapter_id}",
             data={
-                "content": content_array,
-                "questions": questions_obj,
+                "content": updated_content,
+                "questions": questions_payload,
             },
         )
 
