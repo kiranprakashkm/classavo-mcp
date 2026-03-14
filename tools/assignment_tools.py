@@ -34,6 +34,9 @@ async def list_assignments(
         if ctx:
             await ctx.info(f"Fetching assignments for course {public_id}...")
 
+        # Import timezone utilities
+        from utils.timezone import format_due_date, get_user_timezone
+
         client = get_client()
 
         # Get assignments list
@@ -59,22 +62,35 @@ async def list_assignments(
                             "schedules": schedules,
                         }
 
-            # Merge schedule info into assignments
+            # Merge schedule info into assignments with timezone formatting
             for assignment in assignments:
                 identity = assignment.get("identity")
                 if identity in schedule_map:
-                    assignment["due_date"] = schedule_map[identity]["due_date"]
-                    assignment["start_date"] = schedule_map[identity]["start_date"]
+                    due_date_utc = schedule_map[identity]["due_date"]
+                    start_date_utc = schedule_map[identity]["start_date"]
                     assignment["has_schedule"] = True
                 else:
-                    assignment["due_date"] = assignment.get("effective_due_date")
+                    due_date_utc = assignment.get("effective_due_date")
+                    start_date_utc = assignment.get("effective_start_date")
                     assignment["has_schedule"] = False
+
+                # Format due date with timezone info
+                due_info = format_due_date(due_date_utc)
+                assignment["due_date_utc"] = due_date_utc
+                assignment["due_date_local"] = due_info.get("local")
+                assignment["due_date_relative"] = due_info.get("relative")
+                assignment["start_date_utc"] = start_date_utc
 
         except Exception as e:
             # If tasks endpoint fails, continue with assignments only
             logger.warning(f"Could not fetch scheduled tasks: {e}")
             for assignment in assignments:
-                assignment["due_date"] = assignment.get("effective_due_date")
+                due_date_utc = assignment.get("effective_due_date")
+                due_info = format_due_date(due_date_utc)
+                assignment["due_date_utc"] = due_date_utc
+                assignment["due_date_local"] = due_info.get("local")
+                assignment["due_date_relative"] = due_info.get("relative")
+                assignment["start_date_utc"] = assignment.get("effective_start_date")
                 assignment["has_schedule"] = False
 
         if ctx:
@@ -83,6 +99,7 @@ async def list_assignments(
         return {
             "status": "success",
             "public_id": public_id,
+            "timezone": get_user_timezone(),
             "count": len(assignments),
             "assignments": assignments,
         }
@@ -483,7 +500,8 @@ async def clone_assignment(
     name="get_tasks",
     description="Get tasks/assignments with due dates for a course. "
     "Use this for questions about deadlines, due dates, what's due soon, or past due items. "
-    "Views: 'due_soon' (upcoming), 'past_due' (overdue), 'no_due' (no deadline), 'all' (everything).",
+    "Views: 'due_soon' (upcoming), 'past_due' (overdue), 'no_due' (no deadline), 'all' (everything). "
+    "Returns dates in user's local timezone.",
     tags={"assignments", "professor", "student", "deadlines", "tasks"},
 )
 async def get_tasks(
@@ -500,13 +518,16 @@ async def get_tasks(
         ctx: MCP context for logging
 
     Returns:
-        Dict with list of tasks and their due dates
+        Dict with list of tasks and their due dates in local timezone
     """
     try:
         if ctx:
             await ctx.info(f"Fetching {view} tasks for course {public_id}...")
 
         client = get_client()
+
+        # Import timezone utilities
+        from utils.timezone import format_due_date, get_user_timezone
 
         # Build query params based on view
         params = {}
@@ -527,28 +548,35 @@ async def get_tasks(
 
         tasks = result.get("results", []) if isinstance(result, dict) else result
 
-        # Format tasks with clearer due date info
+        # Format tasks with timezone-aware due date info
         formatted_tasks = []
         for task in tasks:
+            # Extract due date from schedules
+            due_date_utc = None
+            start_date_utc = None
+            schedules = task.get("schedules", [])
+            if schedules:
+                due_date_utc = schedules[0].get("end_date")
+                start_date_utc = schedules[0].get("start_date")
+
+            # Fallback to effective dates
+            if not due_date_utc:
+                due_date_utc = task.get("effective_due_date")
+            if not start_date_utc:
+                start_date_utc = task.get("effective_start_date")
+
+            # Format with timezone info
+            due_info = format_due_date(due_date_utc)
+
             formatted_task = {
                 "identity": task.get("identity"),
                 "title": task.get("main_title"),
                 "item_type": task.get("item_type"),
-                "due_date": None,
-                "start_date": None,
+                "due_date_utc": due_date_utc,
+                "due_date_local": due_info.get("local"),
+                "due_date_relative": due_info.get("relative"),
+                "start_date_utc": start_date_utc,
             }
-
-            # Extract due date from schedules
-            schedules = task.get("schedules", [])
-            if schedules:
-                formatted_task["due_date"] = schedules[0].get("end_date")
-                formatted_task["start_date"] = schedules[0].get("start_date")
-
-            # Fallback to effective dates
-            if not formatted_task["due_date"]:
-                formatted_task["due_date"] = task.get("effective_due_date")
-            if not formatted_task["start_date"]:
-                formatted_task["start_date"] = task.get("effective_start_date")
 
             formatted_tasks.append(formatted_task)
 
@@ -559,6 +587,7 @@ async def get_tasks(
             "status": "success",
             "public_id": public_id,
             "view": view,
+            "timezone": get_user_timezone(),
             "count": len(formatted_tasks),
             "tasks": formatted_tasks,
         }
