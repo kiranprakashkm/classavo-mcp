@@ -409,20 +409,29 @@ def create_plate_text(text: str) -> list:
     return [{"type": "p", "children": [{"text": text}], "id": generate_node_id()}]
 
 
+def create_plate_title(text: str) -> list:
+    """
+    Create a Plate.js title array for question text.
+
+    Classavo expects title as a JSON array of Plate.js nodes, not HTML strings.
+    """
+    return [{"type": "p", "children": [{"text": text}], "id": generate_node_id()}]
+
+
 def create_mcq_question_data(
     question_text: str,
     options: list,
     correct_index: int,
-    points: str = "0.5",
-    points_participation: str = "0.5",
+    points: str = "0.50",
+    points_participation: str = "0.50",
 ) -> tuple:
     """
     Create MCQ question data for embedding in a chapter.
 
-    Based on Classavo API schema:
+    Based on Classavo API schema (from content (1).json):
     - question_type: 1 = MULTIPLE_CHOICE
-    - title: Question text (HTML string or Slate JSON)
-    - answer: Array of {identity, title, is_correct, index}
+    - questions_and_answers_list: Array with title as Plate.js JSON array
+    - answer: Array of {identity, title (Plate.js array), is_correct, index}
 
     Args:
         question_text: The question text
@@ -445,30 +454,36 @@ def create_mcq_question_data(
         "id": generate_node_id(),
     }
 
-    # Create answer objects per API schema
+    # Create answer objects with Plate.js title format (index is 1-based)
     answers = []
     for i, option_text in enumerate(options):
         answers.append({
             "identity": f"option-{generate_node_id()}",
-            "title": f"<p>{option_text}</p>",  # HTML string format
+            "title": [{"type": "p", "children": [{"text": option_text}], "id": generate_node_id()}],
             "is_correct": i == correct_index,
-            "index": i,
+            "index": i + 1,  # 1-based index
         })
 
-    # Create the question data for questions.create[question_key]
-    # Using flat title/answer format as per API schema for chapter PUT
+    # Create the question data using questions_and_answers_list format
     question_data = {
+        "questions_and_answers_list": [{
+            "identity": question_key,
+            "title": create_plate_title(question_text),
+            "answer": answers,
+        }],
         "question_type": 1,  # 1 = MULTIPLE_CHOICE
-        "title": f"<p>{question_text}</p>",  # HTML string format
-        "answer": answers,
         "points": points,
         "points_participation": points_participation,
-        "points_multiple_correct_policy": 1,
-        "max_attempts": 2,
+        "points_multiple_correct_policy": 5,
+        "max_attempts": 1,
         "message_if_correct": "",
         "message_if_incorrect": "",
         "use_ai_message": True,
         "is_extra_credit": False,
+        "feedback_type": 1,
+        "feedback_timing": 1,
+        "feedback_delay_days": 0,
+        "identity": question_key,
     }
 
     return question_key, question_node, question_data
@@ -503,11 +518,16 @@ def create_question_node(question_key: str) -> dict:
 def create_written_question_data(
     question_text: str,
     rubric: str = "",
-    points: str = "1.0",
-    points_participation: str = "0.5",
+    points: str = "0.50",
+    points_participation: str = "0.50",
 ) -> tuple:
     """
     Create Written Answer question data.
+
+    Based on Classavo API schema (from content (1).json):
+    - question_type: 2 = WRITTEN_ANSWER
+    - questions_and_answers_list with Plate.js title format
+    - answer: Array with rubric
 
     Args:
         question_text: The question text
@@ -522,33 +542,108 @@ def create_written_question_data(
     question_node = create_question_node(question_key)
 
     question_data = {
+        "questions_and_answers_list": [{
+            "identity": question_key,
+            "title": create_plate_title(question_text),
+            "answer": [{"rubric": rubric, "index": 0}],
+        }],
         "question_type": 2,  # WRITTEN_ANSWER
-        "title": f"<p>{question_text}</p>",
-        "answer": [{"index": 0, "rubric": f"<p>{rubric}</p>" if rubric else ""}],
         "points": points,
         "points_participation": points_participation,
+        "points_multiple_correct_policy": 5,
         "max_attempts": 1,
+        "message_if_correct": "",
+        "message_if_incorrect": "",
         "use_ai_message": True,
         "is_extra_credit": False,
+        "feedback_type": 1,
+        "feedback_timing": 2,
+        "feedback_delay_days": 0,
+        "identity": question_key,
     }
 
     return question_key, question_node, question_data
 
 
+def create_fill_blank_title(question_text: str, num_blanks: int) -> list:
+    """
+    Create a Plate.js title array for fill-in-the-blank questions.
+
+    The title must contain classavo_question_blank nodes as children.
+    Supports placeholders: [BLANK1], [BLANK], ___, {BLANK}, etc.
+
+    Args:
+        question_text: Question text with optional placeholders
+        num_blanks: Number of blanks to insert
+
+    Returns:
+        Plate.js title array with embedded blank nodes
+    """
+    import re
+
+    # Define placeholder patterns
+    placeholder_pattern = r'\[BLANK\d*\]|\[blank\d*\]|\{BLANK\d*\}|\{blank\d*\}|_{3,}'
+
+    # Split text by placeholders
+    parts = re.split(f'({placeholder_pattern})', question_text)
+
+    # Build children array with text and blank nodes
+    children = []
+    blank_count = 0
+
+    for part in parts:
+        if not part:
+            continue
+        if re.match(placeholder_pattern, part):
+            # This is a placeholder - replace with blank node
+            if blank_count < num_blanks:
+                blank_count += 1
+                children.append({
+                    "type": "classavo_question_blank",
+                    "classavo_data": blank_count,
+                    "children": [{"text": ""}],
+                    "id": generate_node_id(),
+                })
+        else:
+            # Regular text
+            children.append({"text": part})
+
+    # If no placeholders were found, append blanks at the end
+    while blank_count < num_blanks:
+        blank_count += 1
+        if children and isinstance(children[-1], dict) and "text" in children[-1]:
+            # Add space before blank if last element is text
+            children[-1]["text"] = children[-1]["text"].rstrip() + " "
+        children.append({
+            "type": "classavo_question_blank",
+            "classavo_data": blank_count,
+            "children": [{"text": ""}],
+            "id": generate_node_id(),
+        })
+
+    # Ensure we have at least one text node if children is empty
+    if not children:
+        children = [{"text": ""}]
+
+    return [{"type": "p", "children": children, "id": generate_node_id()}]
+
+
 def create_fill_blank_question_data(
     question_text: str,
     blanks: list,
-    points: str = "1.0",
-    points_participation: str = "0.5",
+    points: str = "0.50",
+    points_participation: str = "0.50",
 ) -> tuple:
     """
     Create Fill in the Blank question data.
 
-    The question_text should contain placeholders like [BLANK1], [BLANK2], etc.
-    These will be converted to the proper blank format.
+    Based on Classavo API schema (from content (1).json):
+    - question_type: 3 = FILL_IN_THE_BLANK
+    - title: Plate.js array with classavo_question_blank nodes embedded in children
+    - answer: Array with blank_index, word, and tolerance settings
 
     Args:
-        question_text: Question text with [BLANK1], [BLANK2] placeholders
+        question_text: Question text, optionally with [BLANK1], ___, etc. placeholders
         blanks: List of correct answers for each blank, e.g., ["Paris", "France"]
         points: Points for the question
         points_participation: Participation points
@@ -559,13 +654,8 @@ def create_fill_blank_question_data(
     question_key = f"new-question-{generate_node_id()}"
     question_node = create_question_node(question_key)
 
-    # Convert [BLANK1] to proper blank HTML
-    title_html = question_text
-    for i in range(len(blanks)):
-        blank_tag = f'<classavo_question_blank classavo_data="{i + 1}"></classavo_question_blank>'
-        title_html = title_html.replace(f"[BLANK{i + 1}]", blank_tag)
-        title_html = title_html.replace(f"[blank{i + 1}]", blank_tag)
-        title_html = title_html.replace(f"___", blank_tag, 1)  # Also support ___ syntax
+    # Create title with embedded blank nodes (Plate.js format)
+    title = create_fill_blank_title(question_text, len(blanks))
 
     # Create answer objects for each blank
     answers = []
@@ -584,14 +674,24 @@ def create_fill_blank_question_data(
         })
 
     question_data = {
+        "questions_and_answers_list": [{
+            "identity": question_key,
+            "title": title,
+            "answer": answers,
+        }],
         "question_type": 3,  # FILL_IN_THE_BLANK
-        "title": f"<p>{title_html}</p>",
-        "answer": answers,
         "points": points,
         "points_participation": points_participation,
+        "points_multiple_correct_policy": 5,
         "max_attempts": 2,
+        "message_if_correct": "",
+        "message_if_incorrect": "",
         "use_ai_message": True,
         "is_extra_credit": False,
+        "feedback_type": 1,
+        "feedback_timing": 1,
+        "feedback_delay_days": 0,
+        "identity": question_key,
     }
 
     return question_key, question_node, question_data
@@ -600,11 +700,16 @@ def create_fill_blank_question_data(
 def create_matching_question_data(
     question_text: str,
     pairs: list,
-    points: str = "1.0",
-    points_participation: str = "0.5",
+    points: str = "0.50",
+    points_participation: str = "0.50",
 ) -> tuple:
     """
     Create Matching question data.
+
+    Based on Classavo API schema:
+    - question_type: 4 = MATCHING
+    - questions_and_answers_list with Plate.js title format
+    - answer: Array with prompt_title, match_title as Plate.js arrays
 
     Args:
         question_text: The question/instruction text
@@ -618,7 +723,7 @@ def create_matching_question_data(
     question_key = f"new-question-{generate_node_id()}"
     question_node = create_question_node(question_key)
 
-    # Create answer objects for matching pairs
+    # Create answer objects for matching pairs with Plate.js format
     answers = []
     for i, pair in enumerate(pairs):
         if isinstance(pair, dict):
@@ -631,21 +736,31 @@ def create_matching_question_data(
 
         answers.append({
             "identity": f"match-{generate_node_id()}",
-            "prompt_title": f"<p>{prompt}</p>",
-            "match_title": f"<p>{match}</p>",
+            "prompt_title": [{"type": "p", "children": [{"text": prompt}], "id": generate_node_id()}],
+            "match_title": [{"type": "p", "children": [{"text": match}], "id": generate_node_id()}],
             "match_id": i + 1,
             "index": i,
         })
 
     question_data = {
+        "questions_and_answers_list": [{
+            "identity": question_key,
+            "title": create_plate_title(question_text),
+            "answer": answers,
+        }],
         "question_type": 4,  # MATCHING
-        "title": f"<p>{question_text}</p>",
-        "answer": answers,
         "points": points,
         "points_participation": points_participation,
+        "points_multiple_correct_policy": 5,
         "max_attempts": 2,
+        "message_if_correct": "",
+        "message_if_incorrect": "",
         "use_ai_message": True,
         "is_extra_credit": False,
+        "feedback_type": 1,
+        "feedback_timing": 1,
+        "feedback_delay_days": 0,
+        "identity": question_key,
     }
 
     return question_key, question_node, question_data
@@ -654,11 +769,15 @@ def create_matching_question_data(
 def create_file_upload_question_data(
     question_text: str,
     instructions: str = "",
-    points: str = "1.0",
-    points_participation: str = "0.5",
+    points: str = "0.50",
+    points_participation: str = "0.50",
 ) -> tuple:
     """
     Create File Upload question data.
+
+    Based on Classavo API schema:
+    - question_type: 5 = FILE_UPLOAD
+    - questions_and_answers_list with Plate.js title format
 
     Args:
         question_text: The question text
@@ -672,15 +791,28 @@ def create_file_upload_question_data(
     question_key = f"new-question-{generate_node_id()}"
     question_node = create_question_node(question_key)
 
+    # For file upload, answer contains title (instructions) as Plate.js format
+    answer_title = create_plate_title(instructions) if instructions else []
+
     question_data = {
+        "questions_and_answers_list": [{
+            "identity": question_key,
+            "title": create_plate_title(question_text),
+            "answer": [{"title": answer_title, "answer": []}],
+        }],
         "question_type": 5,  # FILE_UPLOAD
-        "title": f"<p>{question_text}</p>",
-        "answer": [{"title": f"<p>{instructions}</p>" if instructions else "", "answer": []}],
         "points": points,
         "points_participation": points_participation,
+        "points_multiple_correct_policy": 5,
         "max_attempts": 1,
+        "message_if_correct": "",
+        "message_if_incorrect": "",
         "use_ai_message": True,
         "is_extra_credit": False,
+        "feedback_type": 1,
+        "feedback_timing": 2,
+        "feedback_delay_days": 0,
+        "identity": question_key,
     }
 
     return question_key, question_node, question_data
@@ -696,6 +828,10 @@ def create_discussion_question_data(
     """
     Create Discussion question data.
 
+    Based on Classavo API schema:
+    - question_type: 7 = DISCUSSION
+    - questions_and_answers_list with Plate.js title format
+
     Args:
         question_text: The discussion prompt
         response_visibility: "everyone" or "instructors_only"
@@ -710,17 +846,27 @@ def create_discussion_question_data(
     question_node = create_question_node(question_key)
 
     question_data = {
+        "questions_and_answers_list": [{
+            "identity": question_key,
+            "title": create_plate_title(question_text),
+            "answer": [],
+        }],
         "question_type": 7,  # DISCUSSION
-        "title": f"<p>{question_text}</p>",
-        "answer": [],
         "response_visibility": response_visibility,
         "anonymous_to": anonymous_to,
         "blocked_words": [],
         "points": points,
         "points_participation": points_participation,
+        "points_multiple_correct_policy": 5,
         "max_attempts": 1,
+        "message_if_correct": "",
+        "message_if_incorrect": "",
         "use_ai_message": False,
         "is_extra_credit": False,
+        "feedback_type": 1,
+        "feedback_timing": 1,
+        "feedback_delay_days": 0,
+        "identity": question_key,
     }
 
     return question_key, question_node, question_data
@@ -729,11 +875,15 @@ def create_discussion_question_data(
 def create_equation_question_data(
     question_text: str,
     correct_answer: str,
-    points: str = "1.0",
-    points_participation: str = "0.5",
+    points: str = "0.50",
+    points_participation: str = "0.50",
 ) -> tuple:
     """
     Create Equation/Formula question data.
+
+    Based on Classavo API schema:
+    - question_type: 100 = EQUATION
+    - questions_and_answers_list with Plate.js title format
 
     Args:
         question_text: The question text
@@ -748,14 +898,24 @@ def create_equation_question_data(
     question_node = create_question_node(question_key)
 
     question_data = {
+        "questions_and_answers_list": [{
+            "identity": question_key,
+            "title": create_plate_title(question_text),
+            "answer": [{"identity": "", "correct_input": correct_answer, "index": 0}],
+        }],
         "question_type": 100,  # EQUATION
-        "title": f"<p>{question_text}</p>",
-        "answer": [{"identity": "", "correct_input": correct_answer, "index": 0}],
         "points": points,
         "points_participation": points_participation,
+        "points_multiple_correct_policy": 5,
         "max_attempts": 2,
+        "message_if_correct": "",
+        "message_if_incorrect": "",
         "use_ai_message": True,
         "is_extra_credit": False,
+        "feedback_type": 1,
+        "feedback_timing": 1,
+        "feedback_delay_days": 0,
+        "identity": question_key,
     }
 
     return question_key, question_node, question_data
