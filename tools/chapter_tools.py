@@ -315,39 +315,66 @@ async def get_chapter_content(
 
         client = get_client()
 
-        # Get chapter/file details - content is in 'content' field as Plate.js JSON
+        # Get chapter/file details
         chapter_info = await client.get(f"/api/file/{chapter_id}")
 
         title = chapter_info.get("title", "")
-        raw_content = chapter_info.get("content")  # Plate.js JSON content
 
-        # Extract plain text from Plate.js content
+        # The 'content' field from API has this structure:
+        # {
+        #   "static_content": [...],  // The actual Plate.js nodes
+        #   "properties": {...},
+        #   "questions": [...]  // Full question objects
+        # }
+        raw_content = chapter_info.get("content")
+
+        # Extract content array and plain text
         plain_text = ""
-        if isinstance(raw_content, dict):
-            # Content field contains 'content' array and 'questions' object
-            content_array = raw_content.get("content", [])
-            plain_text = extract_text_from_plate_content(content_array)
-        elif isinstance(raw_content, list):
-            plain_text = extract_text_from_plate_content(raw_content)
-
-        # Extract embedded questions
+        content_array = []
         embedded_questions = []
+
         if isinstance(raw_content, dict):
-            embedded_questions = extract_questions_from_chapter(raw_content)
+            # Standard format: extract from static_content
+            content_array = raw_content.get("static_content", [])
+            if not content_array:
+                # Fallback: try 'content' key
+                content_array = raw_content.get("content", [])
+
+            plain_text = extract_text_from_plate_content(content_array)
+
+            # Extract questions from the 'questions' array
+            questions_list = raw_content.get("questions", [])
+            for q in questions_list:
+                q_title = extract_text_from_plate_content(q.get("title", []))
+                answers = []
+                for ans in q.get("answer", []):
+                    ans_title = extract_text_from_plate_content(ans.get("title", []))
+                    answers.append({
+                        "text": ans_title,
+                        "is_correct": ans.get("is_correct", False),
+                    })
+                embedded_questions.append({
+                    "identity": q.get("identity"),
+                    "question": q_title,
+                    "question_type": q.get("question_type"),
+                    "points": q.get("points"),
+                    "answers": answers,
+                })
+
+        elif isinstance(raw_content, list):
+            # Direct array format
+            content_array = raw_content
+            plain_text = extract_text_from_plate_content(raw_content)
 
         if ctx:
             if plain_text:
                 await ctx.info(f"Loaded chapter: {len(plain_text)} chars, {len(embedded_questions)} questions")
             else:
-                await ctx.info("Chapter loaded but content may be empty")
+                await ctx.info(f"Chapter loaded: {len(content_array)} nodes, {len(embedded_questions)} questions")
 
         # Debug: Include info about content structure
         content_type = type(raw_content).__name__
-        content_length = 0
-        if isinstance(raw_content, dict):
-            content_length = len(raw_content.get("content", []))
-        elif isinstance(raw_content, list):
-            content_length = len(raw_content)
+        content_length = len(content_array)
 
         return {
             "status": "success",
@@ -487,30 +514,32 @@ async def add_chapter_question(
         # Get current chapter content
         chapter_info = await client.get(f"/api/file/{chapter_id}")
 
-        # Debug: Log what we received
+        # The 'content' field from API has this structure:
+        # {
+        #   "static_content": [...],  // The actual Plate.js nodes
+        #   "properties": {...},
+        #   "data": {...},
+        #   "chapter_assignment_identity": "uuid",
+        #   "questions": [...]  // Full question objects (read-only)
+        # }
         raw_content = chapter_info.get("content")
+
+        # Debug: Log what we received
         logger.info(f"Chapter {chapter_id}: raw_content type = {type(raw_content).__name__}")
         if isinstance(raw_content, dict):
             logger.info(f"Chapter {chapter_id}: raw_content keys = {list(raw_content.keys())}")
 
-        # The 'content' field from API response structure:
-        # When reading: content is the Plate.js array directly (list of nodes)
-        # The 'questions' field is separate at the top level of chapter_info
-
-        # Extract content array - it should be a list of Plate.js nodes
-        if isinstance(raw_content, list):
-            # Content is directly the array of nodes
+        # Extract content array from static_content
+        content_array = []
+        if isinstance(raw_content, dict):
+            # Standard format: extract from static_content
+            content_array = raw_content.get("static_content", [])
+            if not content_array:
+                # Fallback: try 'content' key
+                content_array = raw_content.get("content", [])
+        elif isinstance(raw_content, list):
+            # Direct array format (less common)
             content_array = raw_content
-        elif isinstance(raw_content, dict) and "content" in raw_content:
-            # Content is wrapped: {"content": [...], "questions": {...}}
-            content_array = raw_content.get("content", [])
-        elif isinstance(raw_content, dict):
-            # Content might be a dict with node-like structure (single node?)
-            content_array = [raw_content] if raw_content else []
-        else:
-            # No content or unexpected format
-            content_array = []
-            logger.warning(f"Chapter {chapter_id}: Unexpected content format: {type(raw_content)}")
 
         # Ensure content_array is a list
         if not isinstance(content_array, list):
@@ -519,10 +548,6 @@ async def add_chapter_question(
 
         # Log current content for debugging
         logger.info(f"Chapter {chapter_id}: Found {len(content_array)} existing content nodes")
-
-        if len(content_array) == 0 and raw_content:
-            # Something went wrong - log more details
-            logger.error(f"Chapter {chapter_id}: Content exists but extraction failed! raw_content sample: {str(raw_content)[:500]}")
 
         # Parse options
         option_list = [opt.strip() for opt in options.split(",")]
@@ -641,38 +666,40 @@ async def add_multiple_chapter_questions(
         # Get current chapter content
         chapter_info = await client.get(f"/api/file/{chapter_id}")
 
-        # Debug: Log what we received
+        # The 'content' field from API has this structure:
+        # {
+        #   "static_content": [...],  // The actual Plate.js nodes
+        #   "properties": {...},
+        #   "data": {...},
+        #   "chapter_assignment_identity": "uuid",
+        #   "questions": [...]  // Full question objects (read-only)
+        # }
         raw_content = chapter_info.get("content")
-        logger.info(f"Chapter {chapter_id}: raw_content type = {type(raw_content).__name__}")
 
-        # Extract content array - it should be a list of Plate.js nodes
-        if isinstance(raw_content, list):
-            # Content is directly the array of nodes
+        # Debug: Log what we received
+        logger.info(f"Chapter {chapter_id}: raw_content type = {type(raw_content).__name__}")
+        if isinstance(raw_content, dict):
+            logger.info(f"Chapter {chapter_id}: raw_content keys = {list(raw_content.keys())}")
+
+        # Extract content array from static_content
+        content_array = []
+        if isinstance(raw_content, dict):
+            # Standard format: extract from static_content
+            content_array = raw_content.get("static_content", [])
+            if not content_array:
+                # Fallback: try 'content' key
+                content_array = raw_content.get("content", [])
+        elif isinstance(raw_content, list):
+            # Direct array format (less common)
             content_array = raw_content
-        elif isinstance(raw_content, dict) and "content" in raw_content:
-            # Content is wrapped: {"content": [...], "questions": {...}}
-            content_array = raw_content.get("content", [])
-        elif isinstance(raw_content, dict):
-            # Content might be a dict with node-like structure
-            content_array = [raw_content] if raw_content else []
-        else:
-            # No content or unexpected format
-            content_array = []
 
         # Ensure content_array is a list
         if not isinstance(content_array, list):
+            logger.warning(f"Chapter {chapter_id}: content_array is {type(content_array)}, converting to list")
             content_array = []
 
         # Log current content for debugging
         logger.info(f"Chapter {chapter_id}: Found {len(content_array)} existing content nodes")
-
-        # SAFETY CHECK: If we found no content but raw_content exists, abort to prevent data loss
-        if len(content_array) == 0 and raw_content is not None:
-            raise RuntimeError(
-                f"Safety check failed: Could not extract content from chapter. "
-                f"raw_content type: {type(raw_content).__name__}. "
-                f"Aborting to prevent content loss."
-            )
 
         # Make a copy of the content array to preserve existing content
         updated_content = list(content_array)
