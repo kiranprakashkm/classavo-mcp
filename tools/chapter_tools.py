@@ -160,6 +160,45 @@ async def get_chapter_headings(
         raise RuntimeError(error_msg)
 
 
+def extract_text_from_plate_content(content: any) -> str:
+    """
+    Extract plain text from Plate.js JSON content.
+
+    Plate.js stores content as a tree of nodes with 'children' and 'text' fields.
+    This recursively extracts all text content.
+
+    Args:
+        content: Plate.js JSON content (list or dict)
+
+    Returns:
+        Plain text string
+    """
+    if content is None:
+        return ""
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, dict):
+        # If it has a 'text' field, return it
+        if "text" in content:
+            return content["text"]
+        # Otherwise, recurse into children
+        if "children" in content:
+            return extract_text_from_plate_content(content["children"])
+        return ""
+
+    if isinstance(content, list):
+        texts = []
+        for item in content:
+            text = extract_text_from_plate_content(item)
+            if text:
+                texts.append(text)
+        return "\n".join(texts)
+
+    return ""
+
+
 @mcp.tool(
     name="get_chapter_content",
     description="Get the full text content of a chapter for reading or summarization. "
@@ -178,7 +217,7 @@ async def get_chapter_content(
         ctx: MCP context for logging
 
     Returns:
-        Dict with chapter content
+        Dict with chapter content including extracted plain text
     """
     try:
         if ctx:
@@ -186,37 +225,27 @@ async def get_chapter_content(
 
         client = get_client()
 
-        # Get chapter/file details which should include body content
+        # Get chapter/file details - content is in 'content' field as Plate.js JSON
         chapter_info = await client.get(f"/api/file/{chapter_id}")
 
-        # Extract content fields
-        content = {
-            "title": chapter_info.get("title"),
-            "body": chapter_info.get("body"),
-            "html_body": chapter_info.get("html_body"),
-            "description": chapter_info.get("description"),
-        }
+        title = chapter_info.get("title", "")
+        raw_content = chapter_info.get("content")  # Plate.js JSON content
 
-        # If body is not directly available, try the chapter-specific endpoint
-        if not content.get("body"):
-            try:
-                # Try alternate endpoint for chapter body
-                chapter_detail = await client.get(f"/api/chapters/{chapter_id}")
-                content["body"] = chapter_detail.get("body")
-                content["html_body"] = chapter_detail.get("html_body")
-            except Exception:
-                pass
+        # Extract plain text from Plate.js content
+        plain_text = extract_text_from_plate_content(raw_content)
 
         if ctx:
-            if content.get("body"):
-                await ctx.info(f"Loaded chapter content: {len(content['body'])} chars")
+            if plain_text:
+                await ctx.info(f"Loaded chapter content: {len(plain_text)} chars")
             else:
-                await ctx.info("Chapter content loaded (body may be in html_body)")
+                await ctx.info("Chapter loaded but content may be empty")
 
         return {
             "status": "success",
             "chapter_id": chapter_id,
-            "content": content,
+            "title": title,
+            "text": plain_text,  # Plain text for easy reading/summarization
+            "raw_content": raw_content,  # Original Plate.js JSON if needed
         }
 
     except Exception as e:
