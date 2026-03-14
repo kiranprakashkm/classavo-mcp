@@ -474,6 +474,486 @@ def create_mcq_question_data(
     return question_key, question_node, question_data
 
 
+# Question type constants
+QUESTION_TYPES = {
+    "multiple_choice": 1,
+    "mcq": 1,
+    "written": 2,
+    "written_answer": 2,
+    "fill_blank": 3,
+    "fill_in_the_blank": 3,
+    "matching": 4,
+    "file_upload": 5,
+    "discussion": 7,
+    "equation": 100,
+    "formula": 100,
+}
+
+
+def create_question_node(question_key: str) -> dict:
+    """Create a Plate.js node for embedding a question in chapter content."""
+    return {
+        "type": "classavo_chapter_question",
+        "question_id": question_key,
+        "children": [{"text": ""}],
+        "id": generate_node_id(),
+    }
+
+
+def create_written_question_data(
+    question_text: str,
+    rubric: str = "",
+    points: str = "1.0",
+    points_participation: str = "0.5",
+) -> tuple:
+    """
+    Create Written Answer question data.
+
+    Args:
+        question_text: The question text
+        rubric: Grading rubric/guidelines
+        points: Points for the question
+        points_participation: Participation points
+
+    Returns:
+        Tuple of (question_key, question_node, question_data)
+    """
+    question_key = f"new-question-{generate_node_id()}"
+    question_node = create_question_node(question_key)
+
+    question_data = {
+        "question_type": 2,  # WRITTEN_ANSWER
+        "title": f"<p>{question_text}</p>",
+        "answer": [{"index": 0, "rubric": f"<p>{rubric}</p>" if rubric else ""}],
+        "points": points,
+        "points_participation": points_participation,
+        "max_attempts": 1,
+        "use_ai_message": True,
+        "is_extra_credit": False,
+    }
+
+    return question_key, question_node, question_data
+
+
+def create_fill_blank_question_data(
+    question_text: str,
+    blanks: list,
+    points: str = "1.0",
+    points_participation: str = "0.5",
+) -> tuple:
+    """
+    Create Fill in the Blank question data.
+
+    The question_text should contain placeholders like [BLANK1], [BLANK2], etc.
+    These will be converted to the proper blank format.
+
+    Args:
+        question_text: Question text with [BLANK1], [BLANK2] placeholders
+        blanks: List of correct answers for each blank, e.g., ["Paris", "France"]
+        points: Points for the question
+        points_participation: Participation points
+
+    Returns:
+        Tuple of (question_key, question_node, question_data)
+    """
+    question_key = f"new-question-{generate_node_id()}"
+    question_node = create_question_node(question_key)
+
+    # Convert [BLANK1] to proper blank HTML
+    title_html = question_text
+    for i in range(len(blanks)):
+        blank_tag = f'<classavo_question_blank classavo_data="{i + 1}"></classavo_question_blank>'
+        title_html = title_html.replace(f"[BLANK{i + 1}]", blank_tag)
+        title_html = title_html.replace(f"[blank{i + 1}]", blank_tag)
+        title_html = title_html.replace(f"___", blank_tag, 1)  # Also support ___ syntax
+
+    # Create answer objects for each blank
+    answers = []
+    for i, word in enumerate(blanks):
+        answers.append({
+            "index": i,
+            "blank_index": i + 1,
+            "identity": f"blank-{generate_node_id()}",
+            "word": word,
+            "is_case_sensitive": False,
+            "is_space_sensitive": False,
+            "is_numeric": False,
+            "tolerance": "0",
+            "is_tolerance_percentage": False,
+            "significant_figures": 0,
+        })
+
+    question_data = {
+        "question_type": 3,  # FILL_IN_THE_BLANK
+        "title": f"<p>{title_html}</p>",
+        "answer": answers,
+        "points": points,
+        "points_participation": points_participation,
+        "max_attempts": 2,
+        "use_ai_message": True,
+        "is_extra_credit": False,
+    }
+
+    return question_key, question_node, question_data
+
+
+def create_matching_question_data(
+    question_text: str,
+    pairs: list,
+    points: str = "1.0",
+    points_participation: str = "0.5",
+) -> tuple:
+    """
+    Create Matching question data.
+
+    Args:
+        question_text: The question/instruction text
+        pairs: List of tuples/dicts with prompt and match, e.g., [{"prompt": "A", "match": "1"}, ...]
+        points: Points for the question
+        points_participation: Participation points
+
+    Returns:
+        Tuple of (question_key, question_node, question_data)
+    """
+    question_key = f"new-question-{generate_node_id()}"
+    question_node = create_question_node(question_key)
+
+    # Create answer objects for matching pairs
+    answers = []
+    for i, pair in enumerate(pairs):
+        if isinstance(pair, dict):
+            prompt = pair.get("prompt", "")
+            match = pair.get("match", "")
+        elif isinstance(pair, (list, tuple)) and len(pair) >= 2:
+            prompt, match = pair[0], pair[1]
+        else:
+            continue
+
+        answers.append({
+            "identity": f"match-{generate_node_id()}",
+            "prompt_title": f"<p>{prompt}</p>",
+            "match_title": f"<p>{match}</p>",
+            "match_id": i + 1,
+            "index": i,
+        })
+
+    question_data = {
+        "question_type": 4,  # MATCHING
+        "title": f"<p>{question_text}</p>",
+        "answer": answers,
+        "points": points,
+        "points_participation": points_participation,
+        "max_attempts": 2,
+        "use_ai_message": True,
+        "is_extra_credit": False,
+    }
+
+    return question_key, question_node, question_data
+
+
+def create_file_upload_question_data(
+    question_text: str,
+    instructions: str = "",
+    points: str = "1.0",
+    points_participation: str = "0.5",
+) -> tuple:
+    """
+    Create File Upload question data.
+
+    Args:
+        question_text: The question text
+        instructions: Additional upload instructions
+        points: Points for the question
+        points_participation: Participation points
+
+    Returns:
+        Tuple of (question_key, question_node, question_data)
+    """
+    question_key = f"new-question-{generate_node_id()}"
+    question_node = create_question_node(question_key)
+
+    question_data = {
+        "question_type": 5,  # FILE_UPLOAD
+        "title": f"<p>{question_text}</p>",
+        "answer": [{"title": f"<p>{instructions}</p>" if instructions else "", "answer": []}],
+        "points": points,
+        "points_participation": points_participation,
+        "max_attempts": 1,
+        "use_ai_message": True,
+        "is_extra_credit": False,
+    }
+
+    return question_key, question_node, question_data
+
+
+def create_discussion_question_data(
+    question_text: str,
+    response_visibility: str = "everyone",
+    anonymous_to: str = "noone",
+    points: str = "0",
+    points_participation: str = "5.0",
+) -> tuple:
+    """
+    Create Discussion question data.
+
+    Args:
+        question_text: The discussion prompt
+        response_visibility: "everyone" or "instructors_only"
+        anonymous_to: "noone" or "students_only"
+        points: Points (typically 0 for discussions)
+        points_participation: Participation points
+
+    Returns:
+        Tuple of (question_key, question_node, question_data)
+    """
+    question_key = f"new-question-{generate_node_id()}"
+    question_node = create_question_node(question_key)
+
+    question_data = {
+        "question_type": 7,  # DISCUSSION
+        "title": f"<p>{question_text}</p>",
+        "answer": [],
+        "response_visibility": response_visibility,
+        "anonymous_to": anonymous_to,
+        "blocked_words": [],
+        "points": points,
+        "points_participation": points_participation,
+        "max_attempts": 1,
+        "use_ai_message": False,
+        "is_extra_credit": False,
+    }
+
+    return question_key, question_node, question_data
+
+
+def create_equation_question_data(
+    question_text: str,
+    correct_answer: str,
+    points: str = "1.0",
+    points_participation: str = "0.5",
+) -> tuple:
+    """
+    Create Equation/Formula question data.
+
+    Args:
+        question_text: The question text
+        correct_answer: The correct formula/equation (LaTeX or plain text)
+        points: Points for the question
+        points_participation: Participation points
+
+    Returns:
+        Tuple of (question_key, question_node, question_data)
+    """
+    question_key = f"new-question-{generate_node_id()}"
+    question_node = create_question_node(question_key)
+
+    question_data = {
+        "question_type": 100,  # EQUATION
+        "title": f"<p>{question_text}</p>",
+        "answer": [{"identity": "", "correct_input": correct_answer, "index": 0}],
+        "points": points,
+        "points_participation": points_participation,
+        "max_attempts": 2,
+        "use_ai_message": True,
+        "is_extra_credit": False,
+    }
+
+    return question_key, question_node, question_data
+
+
+@mcp.tool(
+    name="add_any_chapter_question",
+    description="[PROFESSOR ONLY] Add any type of question to a chapter. "
+    "Supported types: 'mcq' (multiple choice), 'written' (written answer), 'fill_blank', "
+    "'matching', 'file_upload', 'discussion', 'equation'. "
+    "Each type requires different parameters in the question_data JSON.",
+    tags={"chapters", "professor", "questions", "content"},
+)
+async def add_any_chapter_question(
+    chapter_id: str,
+    question_type: str,
+    question_text: str,
+    question_data: str = "{}",
+    points: str = "1.0",
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """
+    Add any type of question to a chapter.
+
+    Args:
+        chapter_id: The chapter UUID/identity
+        question_type: Type of question - 'mcq', 'written', 'fill_blank', 'matching',
+                       'file_upload', 'discussion', 'equation'
+        question_text: The question text
+        question_data: JSON string with type-specific data:
+            - mcq: {"options": ["A", "B", "C"], "correct_index": 0}
+            - written: {"rubric": "Grading guidelines..."} (optional)
+            - fill_blank: {"blanks": ["answer1", "answer2"]} (answers for each blank)
+            - matching: {"pairs": [{"prompt": "A", "match": "1"}, ...]}
+            - file_upload: {"instructions": "Upload a PDF..."} (optional)
+            - discussion: {"visibility": "everyone", "anonymous": "noone"} (optional)
+            - equation: {"correct_answer": "x^2 + 2x + 1"}
+        points: Points for the question (default "1.0")
+        ctx: MCP context for logging
+
+    Returns:
+        Dict with created question info
+    """
+    import json
+
+    try:
+        if ctx:
+            await ctx.info(f"Adding {question_type} question to chapter {chapter_id}...")
+
+        # Parse question_data JSON
+        try:
+            data = json.loads(question_data) if question_data else {}
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid question_data JSON: {e}")
+
+        # Validate question type
+        q_type_lower = question_type.lower().replace("-", "_").replace(" ", "_")
+        if q_type_lower not in QUESTION_TYPES:
+            raise ValueError(
+                f"Unknown question type '{question_type}'. "
+                f"Supported: mcq, written, fill_blank, matching, file_upload, discussion, equation"
+            )
+
+        client = get_client()
+
+        # Get current chapter content
+        chapter_info = await client.get(f"/api/file/{chapter_id}")
+        raw_content = chapter_info.get("content")
+
+        # Extract content array from static_content
+        content_array = []
+        if isinstance(raw_content, dict):
+            content_array = raw_content.get("static_content", [])
+            if not content_array:
+                content_array = raw_content.get("content", [])
+        elif isinstance(raw_content, list):
+            content_array = raw_content
+
+        if not isinstance(content_array, list):
+            content_array = []
+
+        logger.info(f"Chapter {chapter_id}: Found {len(content_array)} existing content nodes")
+
+        # SAFETY CHECK: Prevent content loss
+        if len(content_array) == 0 and raw_content is not None:
+            raise RuntimeError(
+                f"Safety check failed: Could not extract content from chapter. "
+                f"raw_content type: {type(raw_content).__name__}. Aborting to prevent content loss."
+            )
+
+        # Create question based on type
+        if q_type_lower in ("mcq", "multiple_choice"):
+            options = data.get("options", [])
+            correct_index = data.get("correct_index", 0)
+            if len(options) < 2:
+                raise ValueError("MCQ requires at least 2 options in question_data")
+            question_key, question_node, question_payload = create_mcq_question_data(
+                question_text=question_text,
+                options=options,
+                correct_index=correct_index,
+                points=points,
+            )
+        elif q_type_lower in ("written", "written_answer"):
+            rubric = data.get("rubric", "")
+            question_key, question_node, question_payload = create_written_question_data(
+                question_text=question_text,
+                rubric=rubric,
+                points=points,
+            )
+        elif q_type_lower in ("fill_blank", "fill_in_the_blank"):
+            blanks = data.get("blanks", [])
+            if not blanks:
+                raise ValueError("Fill in the blank requires 'blanks' array in question_data")
+            question_key, question_node, question_payload = create_fill_blank_question_data(
+                question_text=question_text,
+                blanks=blanks,
+                points=points,
+            )
+        elif q_type_lower == "matching":
+            pairs = data.get("pairs", [])
+            if len(pairs) < 2:
+                raise ValueError("Matching requires at least 2 pairs in question_data")
+            question_key, question_node, question_payload = create_matching_question_data(
+                question_text=question_text,
+                pairs=pairs,
+                points=points,
+            )
+        elif q_type_lower == "file_upload":
+            instructions = data.get("instructions", "")
+            question_key, question_node, question_payload = create_file_upload_question_data(
+                question_text=question_text,
+                instructions=instructions,
+                points=points,
+            )
+        elif q_type_lower == "discussion":
+            visibility = data.get("visibility", "everyone")
+            anonymous = data.get("anonymous", "noone")
+            question_key, question_node, question_payload = create_discussion_question_data(
+                question_text=question_text,
+                response_visibility=visibility,
+                anonymous_to=anonymous,
+                points="0",  # Discussions typically don't have correctness points
+                points_participation=points,
+            )
+        elif q_type_lower in ("equation", "formula"):
+            correct_answer = data.get("correct_answer", "")
+            if not correct_answer:
+                raise ValueError("Equation requires 'correct_answer' in question_data")
+            question_key, question_node, question_payload = create_equation_question_data(
+                question_text=question_text,
+                correct_answer=correct_answer,
+                points=points,
+            )
+        else:
+            raise ValueError(f"Unhandled question type: {q_type_lower}")
+
+        # Make a copy and add question node
+        updated_content = list(content_array)
+        empty_para = {"type": "p", "id": generate_node_id(), "children": [{"text": ""}]}
+        updated_content.append(question_node)
+        updated_content.append(empty_para)
+
+        # Build questions payload
+        questions_payload = {
+            "create": {question_key: question_payload},
+            "edit": {},
+            "delete": [],
+        }
+
+        logger.info(f"Sending content with {len(updated_content)} nodes, adding {question_type} question")
+
+        # Update the chapter
+        await client.put(
+            f"/api/file/{chapter_id}",
+            data={
+                "content": updated_content,
+                "questions": questions_payload,
+            },
+        )
+
+        if ctx:
+            await ctx.info(f"{question_type.upper()} question added successfully!")
+
+        return {
+            "status": "success",
+            "message": f"{question_type} question added to chapter",
+            "chapter_id": chapter_id,
+            "question_id": question_key,
+            "question_type": question_type,
+            "question_text": question_text,
+        }
+
+    except Exception as e:
+        error_msg = f"Failed to add chapter question: {str(e)}"
+        if ctx:
+            await ctx.error(error_msg)
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
 
 
 @mcp.tool(
@@ -623,24 +1103,41 @@ async def add_chapter_question(
 
 @mcp.tool(
     name="add_multiple_chapter_questions",
-    description="[PROFESSOR ONLY] Add multiple MCQ questions to a chapter at once. "
-    "Each question should be a JSON object with: question_text, options (array), correct_option_index. "
-    "Example: [{\"question_text\": \"What is X?\", \"options\": [\"A\", \"B\", \"C\"], \"correct_option_index\": 0}]",
+    description="[PROFESSOR ONLY] Add multiple questions of any type to a chapter at once. "
+    "Each question needs: question_type, question_text, and type-specific fields. "
+    "Types: 'mcq', 'written', 'fill_blank', 'matching', 'file_upload', 'discussion', 'equation'. "
+    "Examples: "
+    "[{\"question_type\": \"mcq\", \"question_text\": \"What is X?\", \"options\": [\"A\", \"B\"], \"correct_index\": 0}, "
+    "{\"question_type\": \"written\", \"question_text\": \"Explain Y.\", \"rubric\": \"Full sentences required\"}, "
+    "{\"question_type\": \"fill_blank\", \"question_text\": \"The capital of France is [BLANK1].\", \"blanks\": [\"Paris\"]}, "
+    "{\"question_type\": \"matching\", \"question_text\": \"Match the items.\", \"pairs\": [{\"prompt\": \"A\", \"match\": \"1\"}]}, "
+    "{\"question_type\": \"equation\", \"question_text\": \"Solve: 2+2=\", \"correct_answer\": \"4\"}]",
     tags={"chapters", "professor", "questions", "content"},
 )
 async def add_multiple_chapter_questions(
     chapter_id: str,
     questions_json: str,
-    points_per_question: str = "1.0",
+    default_points: str = "1.0",
     ctx: Context = None,
 ) -> Dict[str, Any]:
     """
-    Add multiple MCQ questions to a chapter.
+    Add multiple questions of any type to a chapter.
 
     Args:
         chapter_id: The chapter UUID/identity
-        questions_json: JSON array of questions, each with question_text, options, correct_option_index
-        points_per_question: Points for each question (default "1.0")
+        questions_json: JSON array of questions. Each question needs:
+            - question_type: 'mcq', 'written', 'fill_blank', 'matching', 'file_upload', 'discussion', 'equation'
+            - question_text: The question text
+            - Type-specific fields:
+                - mcq: options (array), correct_index (int)
+                - written: rubric (optional string)
+                - fill_blank: blanks (array of correct answers)
+                - matching: pairs (array of {prompt, match})
+                - file_upload: instructions (optional string)
+                - discussion: visibility, anonymous (optional)
+                - equation: correct_answer (string)
+            - points (optional): Points for this question
+        default_points: Default points for questions without explicit points
         ctx: MCP context for logging
 
     Returns:
@@ -665,41 +1162,29 @@ async def add_multiple_chapter_questions(
 
         # Get current chapter content
         chapter_info = await client.get(f"/api/file/{chapter_id}")
-
-        # The 'content' field from API has this structure:
-        # {
-        #   "static_content": [...],  // The actual Plate.js nodes
-        #   "properties": {...},
-        #   "data": {...},
-        #   "chapter_assignment_identity": "uuid",
-        #   "questions": [...]  // Full question objects (read-only)
-        # }
         raw_content = chapter_info.get("content")
 
-        # Debug: Log what we received
         logger.info(f"Chapter {chapter_id}: raw_content type = {type(raw_content).__name__}")
-        if isinstance(raw_content, dict):
-            logger.info(f"Chapter {chapter_id}: raw_content keys = {list(raw_content.keys())}")
 
         # Extract content array from static_content
         content_array = []
         if isinstance(raw_content, dict):
-            # Standard format: extract from static_content
             content_array = raw_content.get("static_content", [])
             if not content_array:
-                # Fallback: try 'content' key
                 content_array = raw_content.get("content", [])
         elif isinstance(raw_content, list):
-            # Direct array format (less common)
             content_array = raw_content
 
-        # Ensure content_array is a list
         if not isinstance(content_array, list):
-            logger.warning(f"Chapter {chapter_id}: content_array is {type(content_array)}, converting to list")
             content_array = []
 
-        # Log current content for debugging
         logger.info(f"Chapter {chapter_id}: Found {len(content_array)} existing content nodes")
+
+        # SAFETY CHECK: Prevent content loss
+        if len(content_array) == 0 and raw_content is not None:
+            raise RuntimeError(
+                f"Safety check failed: Could not extract content from chapter. Aborting to prevent content loss."
+            )
 
         # Make a copy of the content array to preserve existing content
         updated_content = list(content_array)
@@ -707,48 +1192,125 @@ async def add_multiple_chapter_questions(
         # Track new questions to create
         new_questions = {}
         added_questions = []
+        errors = []
 
-        for q in questions_list:
+        for i, q in enumerate(questions_list):
             question_text = q.get("question_text", "")
-            options = q.get("options", [])
-            correct_index = q.get("correct_option_index", 0)
+            question_type = q.get("question_type", "mcq").lower().replace("-", "_").replace(" ", "_")
+            points = q.get("points", default_points)
 
-            if not question_text or len(options) < 2:
+            if not question_text:
+                errors.append(f"Question {i}: missing question_text")
                 continue
 
-            # Create the question
-            question_id, question_node, question_data = create_mcq_question_data(
-                question_text=question_text,
-                options=options,
-                correct_index=correct_index,
-                points=points_per_question,
-            )
+            if question_type not in QUESTION_TYPES:
+                errors.append(f"Question {i}: unknown type '{question_type}'")
+                continue
 
-            # Add question node to content
-            empty_para = {"type": "p", "id": generate_node_id(), "children": [{"text": ""}]}
-            updated_content.append(question_node)
-            updated_content.append(empty_para)
+            try:
+                # Create question based on type
+                if question_type in ("mcq", "multiple_choice"):
+                    options = q.get("options", [])
+                    correct_index = q.get("correct_index", q.get("correct_option_index", 0))
+                    if len(options) < 2:
+                        errors.append(f"Question {i}: MCQ needs at least 2 options")
+                        continue
+                    question_key, question_node, question_payload = create_mcq_question_data(
+                        question_text=question_text,
+                        options=options,
+                        correct_index=correct_index,
+                        points=points,
+                    )
+                elif question_type in ("written", "written_answer"):
+                    rubric = q.get("rubric", "")
+                    question_key, question_node, question_payload = create_written_question_data(
+                        question_text=question_text,
+                        rubric=rubric,
+                        points=points,
+                    )
+                elif question_type in ("fill_blank", "fill_in_the_blank"):
+                    blanks = q.get("blanks", [])
+                    if not blanks:
+                        errors.append(f"Question {i}: fill_blank needs 'blanks' array")
+                        continue
+                    question_key, question_node, question_payload = create_fill_blank_question_data(
+                        question_text=question_text,
+                        blanks=blanks,
+                        points=points,
+                    )
+                elif question_type == "matching":
+                    pairs = q.get("pairs", [])
+                    if len(pairs) < 2:
+                        errors.append(f"Question {i}: matching needs at least 2 pairs")
+                        continue
+                    question_key, question_node, question_payload = create_matching_question_data(
+                        question_text=question_text,
+                        pairs=pairs,
+                        points=points,
+                    )
+                elif question_type == "file_upload":
+                    instructions = q.get("instructions", "")
+                    question_key, question_node, question_payload = create_file_upload_question_data(
+                        question_text=question_text,
+                        instructions=instructions,
+                        points=points,
+                    )
+                elif question_type == "discussion":
+                    visibility = q.get("visibility", "everyone")
+                    anonymous = q.get("anonymous", "noone")
+                    question_key, question_node, question_payload = create_discussion_question_data(
+                        question_text=question_text,
+                        response_visibility=visibility,
+                        anonymous_to=anonymous,
+                        points="0",
+                        points_participation=points,
+                    )
+                elif question_type in ("equation", "formula"):
+                    correct_answer = q.get("correct_answer", "")
+                    if not correct_answer:
+                        errors.append(f"Question {i}: equation needs 'correct_answer'")
+                        continue
+                    question_key, question_node, question_payload = create_equation_question_data(
+                        question_text=question_text,
+                        correct_answer=correct_answer,
+                        points=points,
+                    )
+                else:
+                    errors.append(f"Question {i}: unhandled type '{question_type}'")
+                    continue
 
-            # Add question data to create map
-            new_questions[question_id] = question_data
+                # Add question node to content
+                empty_para = {"type": "p", "id": generate_node_id(), "children": [{"text": ""}]}
+                updated_content.append(question_node)
+                updated_content.append(empty_para)
 
-            added_questions.append({
-                "question_id": question_id,
-                "question_text": question_text,
-                "correct_answer": options[correct_index] if correct_index < len(options) else None,
-            })
+                # Add question data to create map
+                new_questions[question_key] = question_payload
 
-        # Build questions payload - only add new questions, don't modify existing
+                added_questions.append({
+                    "question_id": question_key,
+                    "question_type": question_type,
+                    "question_text": question_text,
+                })
+
+            except Exception as e:
+                errors.append(f"Question {i}: {str(e)}")
+                continue
+
+        if not added_questions:
+            raise ValueError(f"No valid questions to add. Errors: {errors}")
+
+        # Build questions payload
         questions_payload = {
             "create": new_questions,
-            "edit": {},  # Don't modify existing questions
-            "delete": [],  # Don't delete any questions
+            "edit": {},
+            "delete": [],
         }
 
         logger.info(f"Sending content with {len(updated_content)} nodes, adding {len(new_questions)} questions")
 
-        # Update the chapter - content is array, questions is object
-        result = await client.put(
+        # Update the chapter
+        await client.put(
             f"/api/file/{chapter_id}",
             data={
                 "content": updated_content,
@@ -759,12 +1321,17 @@ async def add_multiple_chapter_questions(
         if ctx:
             await ctx.info(f"Added {len(added_questions)} questions successfully!")
 
-        return {
+        result = {
             "status": "success",
             "message": f"Added {len(added_questions)} questions to chapter",
             "chapter_id": chapter_id,
             "questions_added": added_questions,
         }
+
+        if errors:
+            result["warnings"] = errors
+
+        return result
 
     except Exception as e:
         error_msg = f"Failed to add chapter questions: {str(e)}"

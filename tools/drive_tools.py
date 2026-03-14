@@ -386,7 +386,9 @@ async def copy_drive_item(
 
 @mcp.tool(
     name="get_item_schedules",
-    description="Get the schedules (start/due dates) for a drive item.",
+    description="Get the schedules (start/due dates) for a drive item. "
+    "Shows both class-wide schedules and individual student/section extensions. "
+    "Use this to see who has different due dates.",
     tags={"drive", "professor", "student", "schedules"},
 )
 async def get_item_schedules(
@@ -403,23 +405,76 @@ async def get_item_schedules(
         ctx: MCP context for logging
 
     Returns:
-        Dict with schedule data
+        Dict with schedule data including individual extensions
     """
     try:
         if ctx:
             await ctx.info(f"Fetching schedules for {item_type} {item_id}...")
 
+        # Import timezone utilities
+        from utils.timezone import format_due_date, get_user_timezone
+
         client = get_client()
         result = await client.get(f"/api/v2/drive/items/{item_type}/{item_id}/schedules")
 
+        schedules = result.get("schedules", [])
+
+        # Process schedules to add readable info
+        processed_schedules = []
+        class_schedule = None
+        individual_extensions = []
+
+        for schedule in schedules:
+            scope = schedule.get("scope")
+            targets = schedule.get("targets", [])
+            target_info = schedule.get("target_info", [])
+            end_date = schedule.get("end_date")
+            start_date = schedule.get("start_date")
+
+            # Format dates
+            due_info = format_due_date(end_date)
+
+            processed = {
+                "start_date_utc": start_date,
+                "end_date_utc": end_date,
+                "due_date_local": due_info.get("local"),
+                "due_date_relative": due_info.get("relative"),
+                "scope": "ALL" if scope == 1 else "INCLUDE",
+            }
+
+            if scope == 1:
+                # Class-wide schedule
+                processed["applies_to"] = "All students"
+                class_schedule = processed
+            else:
+                # Individual or section schedule
+                target_names = []
+                for ti in target_info:
+                    name = ti.get("name") or ti.get("email") or ti.get("target_id")
+                    target_type = "Student" if ti.get("target") == 1 else "Section"
+                    target_names.append(f"{target_type}: {name}")
+                processed["applies_to"] = target_names
+                processed["targets"] = targets
+                individual_extensions.append(processed)
+
+            processed_schedules.append(processed)
+
         if ctx:
-            await ctx.info("Schedules loaded")
+            ext_count = len(individual_extensions)
+            msg = f"Found {len(schedules)} schedule(s)"
+            if ext_count > 0:
+                msg += f" ({ext_count} individual extension(s))"
+            await ctx.info(msg)
 
         return {
             "status": "success",
             "item_id": item_id,
             "item_type": item_type,
-            "schedules": result.get("schedules", []),
+            "timezone": get_user_timezone(),
+            "assignment_type": result.get("assignment_type"),
+            "class_schedule": class_schedule,
+            "individual_extensions": individual_extensions,
+            "all_schedules": processed_schedules,
         }
 
     except Exception as e:
@@ -431,9 +486,401 @@ async def get_item_schedules(
 
 
 @mcp.tool(
+    name="set_student_due_date",
+    description="[PROFESSOR ONLY] Set a different due date for a specific student (extension/accommodation). "
+    "This adds an individual schedule for the student while keeping the class-wide due date intact. "
+    "Use student_id (UUID) from course roster. For extending a deadline, set end_date to the new due date.",
+    tags={"drive", "professor", "schedules", "due_date", "deadline", "extension", "accommodation"},
+)
+async def set_student_due_date(
+    item_id: str,
+    item_type: str,
+    student_id: str,
+    end_date: str,
+    start_date: str = None,
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """
+    Set an individual due date for a specific student.
+
+    This creates or updates an individual schedule for the student while
+    preserving the class-wide schedule. Use this for due date extensions
+    or accommodations.
+
+    Args:
+        item_id: The item UUID (assignment, file, playlist, or folder)
+        item_type: Type of item (file, folder, assignment, playlist)
+        student_id: The student's UUID (from course roster)
+        end_date: New due date in ISO format (e.g., "2025-04-20T23:59:59Z")
+        start_date: Optional start date (defaults to same as class)
+        ctx: MCP context for logging
+
+    Returns:
+        Dict with updated schedules
+    """
+    try:
+        if ctx:
+            await ctx.info(f"Setting individual due date for student {student_id}...")
+
+        # Import timezone utilities
+        from utils.timezone import format_due_date, get_user_timezone, local_to_utc
+
+        client = get_client()
+
+        # First get current schedules to preserve class-wide schedule
+        current = await client.get(f"/api/v2/drive/items/{item_type}/{item_id}/schedules")
+        current_schedules = current.get("schedules", [])
+
+        # Find existing class-wide schedule (scope=1)
+        class_schedule = None
+        other_individual_schedules = []
+
+        for schedule in current_schedules:
+            if schedule.get("scope") == 1:
+                class_schedule = {
+                    "scope": 1,
+                    "targets": [],
+                    "start_date": schedule.get("start_date"),
+                    "end_date": schedule.get("end_date"),
+                }
+            elif schedule.get("scope") == 2:
+                # Check if this is for the same student - if so, we'll replace it
+                targets = schedule.get("targets", [])
+                is_same_student = any(
+                    t.get("target") == 1 and t.get("target_id") == student_id
+                    for t in targets
+                )
+                if not is_same_student:
+                    # Keep other individual schedules
+                    other_individual_schedules.append({
+                        "scope": 2,
+                        "targets": targets,
+                        "start_date": schedule.get("start_date"),
+                        "end_date": schedule.get("end_date"),
+                    })
+
+        # Build new schedules array
+        new_schedules = []
+
+        # Add class-wide schedule if it exists
+        if class_schedule:
+            new_schedules.append(class_schedule)
+        else:
+            # If no class schedule, we need to create one (shouldn't normally happen)
+            logger.warning(f"No class-wide schedule found for {item_id}, creating default")
+
+        # Add other existing individual schedules
+        new_schedules.extend(other_individual_schedules)
+
+        # Add the new individual schedule for this student
+        student_schedule = {
+            "scope": 2,  # INCLUDE - specific targets only
+            "targets": [
+                {
+                    "target": 1,  # STUDENT
+                    "target_id": student_id,
+                }
+            ],
+            "end_date": end_date,
+        }
+        if start_date:
+            student_schedule["start_date"] = start_date
+        elif class_schedule and class_schedule.get("start_date"):
+            student_schedule["start_date"] = class_schedule.get("start_date")
+
+        new_schedules.append(student_schedule)
+
+        # Update using assign-v3
+        result = await client.post(
+            f"/api/v2/drive/items/{item_id}/assign-v3",
+            data={
+                "item_type": item_type,
+                "include_subfolders": False,
+                "schedules": new_schedules,
+            },
+        )
+
+        # Format the due date for response
+        due_info = format_due_date(end_date)
+
+        if ctx:
+            await ctx.info(f"Individual due date set: {due_info.get('local')}")
+
+        return {
+            "status": "success",
+            "message": f"Individual due date set for student",
+            "item_id": item_id,
+            "item_type": item_type,
+            "student_id": student_id,
+            "new_due_date_utc": end_date,
+            "new_due_date_local": due_info.get("local"),
+            "timezone": get_user_timezone(),
+            "total_schedules": len(new_schedules),
+        }
+
+    except Exception as e:
+        error_msg = f"Failed to set student due date: {str(e)}"
+        if ctx:
+            await ctx.error(error_msg)
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+
+
+@mcp.tool(
+    name="set_multiple_student_due_dates",
+    description="[PROFESSOR ONLY] Set different due dates for multiple students at once. "
+    "Provide a JSON array of {student_id, end_date} objects. "
+    "Example: [{\"student_id\": \"uuid1\", \"end_date\": \"2025-04-20T23:59:59Z\"}, ...]",
+    tags={"drive", "professor", "schedules", "due_date", "deadline", "extension", "accommodation"},
+)
+async def set_multiple_student_due_dates(
+    item_id: str,
+    item_type: str,
+    student_dates_json: str,
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """
+    Set individual due dates for multiple students at once.
+
+    Args:
+        item_id: The item UUID (assignment, file, playlist, or folder)
+        item_type: Type of item (file, folder, assignment, playlist)
+        student_dates_json: JSON array of objects with student_id and end_date
+                           e.g., [{"student_id": "uuid", "end_date": "2025-04-20T23:59:59Z"}]
+        ctx: MCP context for logging
+
+    Returns:
+        Dict with updated schedules
+    """
+    import json
+
+    try:
+        if ctx:
+            await ctx.info(f"Setting individual due dates for multiple students...")
+
+        # Parse input
+        try:
+            student_dates = json.loads(student_dates_json)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON: {e}")
+
+        if not isinstance(student_dates, list):
+            raise ValueError("student_dates_json must be a JSON array")
+
+        # Import timezone utilities
+        from utils.timezone import format_due_date, get_user_timezone
+
+        client = get_client()
+
+        # Get current schedules
+        current = await client.get(f"/api/v2/drive/items/{item_type}/{item_id}/schedules")
+        current_schedules = current.get("schedules", [])
+
+        # Find existing class-wide schedule
+        class_schedule = None
+        for schedule in current_schedules:
+            if schedule.get("scope") == 1:
+                class_schedule = {
+                    "scope": 1,
+                    "targets": [],
+                    "start_date": schedule.get("start_date"),
+                    "end_date": schedule.get("end_date"),
+                }
+                break
+
+        # Build new schedules array
+        new_schedules = []
+
+        # Add class-wide schedule if exists
+        if class_schedule:
+            new_schedules.append(class_schedule)
+
+        # Build set of new student IDs being set
+        new_student_ids = {sd.get("student_id") for sd in student_dates}
+
+        # Keep existing individual schedules for OTHER students
+        for schedule in current_schedules:
+            if schedule.get("scope") == 2:
+                targets = schedule.get("targets", [])
+                # Check if any target is a student we're NOT updating
+                keep_targets = []
+                for t in targets:
+                    if t.get("target") == 1 and t.get("target_id") not in new_student_ids:
+                        keep_targets.append(t)
+                if keep_targets:
+                    new_schedules.append({
+                        "scope": 2,
+                        "targets": keep_targets,
+                        "start_date": schedule.get("start_date"),
+                        "end_date": schedule.get("end_date"),
+                    })
+
+        # Add new individual schedules
+        added_students = []
+        for sd in student_dates:
+            student_id = sd.get("student_id")
+            end_date = sd.get("end_date")
+            start_date = sd.get("start_date")
+
+            if not student_id or not end_date:
+                continue
+
+            student_schedule = {
+                "scope": 2,
+                "targets": [{"target": 1, "target_id": student_id}],
+                "end_date": end_date,
+            }
+            if start_date:
+                student_schedule["start_date"] = start_date
+            elif class_schedule and class_schedule.get("start_date"):
+                student_schedule["start_date"] = class_schedule.get("start_date")
+
+            new_schedules.append(student_schedule)
+            added_students.append({
+                "student_id": student_id,
+                "end_date": end_date,
+                "due_date_local": format_due_date(end_date).get("local"),
+            })
+
+        # Update using assign-v3
+        result = await client.post(
+            f"/api/v2/drive/items/{item_id}/assign-v3",
+            data={
+                "item_type": item_type,
+                "include_subfolders": False,
+                "schedules": new_schedules,
+            },
+        )
+
+        if ctx:
+            await ctx.info(f"Set individual due dates for {len(added_students)} students")
+
+        return {
+            "status": "success",
+            "message": f"Individual due dates set for {len(added_students)} students",
+            "item_id": item_id,
+            "item_type": item_type,
+            "timezone": get_user_timezone(),
+            "students_updated": added_students,
+            "total_schedules": len(new_schedules),
+        }
+
+    except Exception as e:
+        error_msg = f"Failed to set student due dates: {str(e)}"
+        if ctx:
+            await ctx.error(error_msg)
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+
+
+@mcp.tool(
+    name="remove_student_due_date",
+    description="[PROFESSOR ONLY] Remove an individual due date extension for a student, "
+    "reverting them to the class-wide due date.",
+    tags={"drive", "professor", "schedules", "due_date", "extension"},
+)
+async def remove_student_due_date(
+    item_id: str,
+    item_type: str,
+    student_id: str,
+    ctx: Context = None,
+) -> Dict[str, Any]:
+    """
+    Remove an individual due date for a student.
+
+    Args:
+        item_id: The item UUID
+        item_type: Type of item (file, folder, assignment, playlist)
+        student_id: The student's UUID
+        ctx: MCP context for logging
+
+    Returns:
+        Dict with updated schedules
+    """
+    try:
+        if ctx:
+            await ctx.info(f"Removing individual due date for student {student_id}...")
+
+        client = get_client()
+
+        # Get current schedules
+        current = await client.get(f"/api/v2/drive/items/{item_type}/{item_id}/schedules")
+        current_schedules = current.get("schedules", [])
+
+        # Build new schedules excluding this student's individual schedule
+        new_schedules = []
+        removed = False
+
+        for schedule in current_schedules:
+            if schedule.get("scope") == 1:
+                # Keep class-wide schedule
+                new_schedules.append({
+                    "scope": 1,
+                    "targets": [],
+                    "start_date": schedule.get("start_date"),
+                    "end_date": schedule.get("end_date"),
+                })
+            elif schedule.get("scope") == 2:
+                # Check targets - exclude this student
+                targets = schedule.get("targets", [])
+                remaining_targets = []
+                for t in targets:
+                    if t.get("target") == 1 and t.get("target_id") == student_id:
+                        removed = True
+                    else:
+                        remaining_targets.append(t)
+
+                # Keep schedule if there are remaining targets
+                if remaining_targets:
+                    new_schedules.append({
+                        "scope": 2,
+                        "targets": remaining_targets,
+                        "start_date": schedule.get("start_date"),
+                        "end_date": schedule.get("end_date"),
+                    })
+
+        if not removed:
+            return {
+                "status": "warning",
+                "message": "No individual due date found for this student",
+                "item_id": item_id,
+                "student_id": student_id,
+            }
+
+        # Update using assign-v3
+        result = await client.post(
+            f"/api/v2/drive/items/{item_id}/assign-v3",
+            data={
+                "item_type": item_type,
+                "include_subfolders": False,
+                "schedules": new_schedules,
+            },
+        )
+
+        if ctx:
+            await ctx.info("Individual due date removed")
+
+        return {
+            "status": "success",
+            "message": "Individual due date removed - student now follows class schedule",
+            "item_id": item_id,
+            "item_type": item_type,
+            "student_id": student_id,
+        }
+
+    except Exception as e:
+        error_msg = f"Failed to remove student due date: {str(e)}"
+        if ctx:
+            await ctx.error(error_msg)
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+
+
+@mcp.tool(
     name="set_item_schedule",
-    description="[PROFESSOR ONLY] Set or update the schedule (start date and due date) for a drive item. "
-    "Use this to assign due dates to assignments, files, folders, or playlists.",
+    description="[PROFESSOR ONLY] Set or update the class-wide schedule (start date and due date) for a drive item. "
+    "Use this to assign due dates to assignments, files, folders, or playlists. "
+    "For individual student extensions, use set_student_due_date instead.",
     tags={"drive", "professor", "schedules", "due_date", "deadline"},
 )
 async def set_item_schedule(
